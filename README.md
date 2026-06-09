@@ -48,12 +48,9 @@ $$T_s = T_p + \frac{1}{A_v}\,\frac{dQ}{dt}\left(\frac{1}{K_v} + \frac{l_{ice}}{k
 
 **Модификация** — разбито на два явных потока с **подвижной** толщиной льда $L_0 - H$:
 
-$$
-\begin{aligned}
-J_s\,\Delta H_{sub} &= K_v\,\frac{A_v}{A_p}\,(T_s - T_b) \\[4pt]
-J_s\,\Delta H_{sub} &= \frac{k_{ice}}{L_0 - H}\,(T_b - T_p)
-\end{aligned}
-$$
+$$J_s\,\Delta H_{sub} = K_v\,\frac{A_v}{A_p}\,(T_s - T_b)$$
+
+$$J_s\,\Delta H_{sub} = \frac{k_{ice}}{L_0 - H}\,(T_b - T_p)$$
 
 Первое уравнение — поток тепла «полка → дно флакона», второе — «дно → фронт через
 слой льда». Теперь $T_b$ и $T_p$ — **разные** искомые, а проводимость льда
@@ -113,13 +110,11 @@ $$K_v = K_C + \frac{3.32\times10^{-3}\,P}{1 + K_D\,P}, \qquad P\ [\mathrm{Torr}]
 На каждом шаге по времени решается **квазистационарная система** из 3 уравнений
 относительно $(T_p,\ T_b,\ J_s)$ — это §3.1 + §3.2:
 
-$$
-\begin{aligned}
-J_s &= \frac{P_{ice}(T_p) - P_c}{R_p(H)} \\[4pt]
-J_s\,\Delta H_{sub} &= K_v\,\frac{A_v}{A_p}\,(T_s - T_b) \\[4pt]
-J_s\,\Delta H_{sub} &= \frac{k_{ice}}{L_0 - H}\,(T_b - T_p)
-\end{aligned}
-$$
+$$J_s = \frac{P_{ice}(T_p) - P_c}{R_p(H)}$$
+
+$$J_s\,\Delta H_{sub} = K_v\,\frac{A_v}{A_p}\,(T_s - T_b)$$
+
+$$J_s\,\Delta H_{sub} = \frac{k_{ice}}{L_0 - H}\,(T_b - T_p)$$
 
 Решается бисекцией по $T_p$ в диапазоне $[T_p^{floor},\ T_s]$, где $T_p^{floor}$ — порог
 сублимации ($P_{ice} = P_c$). Затем фронт сдвигается $H \leftarrow H + (J_s/\rho_{cake})\,dt$.
