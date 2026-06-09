@@ -168,6 +168,42 @@ m.primary_drying(-20.0, 0.10, rp_func=rp)
 
 ---
 
+## 6-бис. Физоснованные усиления (без новых экспериментов)
+
+По итогам deep-research добавлены четыре первопринципных уточнения (`enhancements.py`):
+
+**E. Извилистость $\tau(\varepsilon)$ из физики пористой среды** — вместо «голого» Бруггемана выбор моделей:
+
+$$\tau_{Bruggeman}=\varepsilon^{-1/2}, \quad \tau_{Archie}=\varepsilon^{-3/2}, \quad \tau_{directional}=1+\tfrac{1}{2}(1-\varepsilon)$$
+
+При $\varepsilon\to1$ все дают $\tau\to1$; различие важно лишь для плотных коржей (высокая концентрация). Для направленной заморозки поры колонные → низкая $\tau$ (`directional`).
+
+**D. Dusty-gas** — к кнудсеновской диффузии добавлен вязкий (пуазейлев) член:
+
+$$D_{eff} = \frac{\varepsilon}{\tau}D_K + \frac{B_0\,\bar P}{\mu}, \qquad B_0 = \frac{\varepsilon\,r_{pore}^2}{8\tau}$$
+
+Вязкая поправка растёт с давлением и размером пор: ~0 % при 0.05 Torr (Kn≈74) → ~8 % при 1 Torr (Kn≈3.7). Критерий — число Кнудсена $Kn=\lambda_{mfp}/r_{pore}$.
+
+**F. Размер пор из теории затвердевания** — вместо таблицы режимов: скорость фронта $v$ и градиент $G$ берутся из задачи Стефана при заморозке, далее масштаб направленной кристаллизации:
+
+$$r_{pore} = r_{ref}\left(\frac{v_{ref}}{v}\right)^{1/2}, \qquad v,\,G \text{ — из } \texttt{freezing\_front}()$$
+
+Даёт **непрерывную** зависимость от условий заморозки (полка/Kv/геометрия), а не дискретные значения. Один реперный $r_{ref}$ — из обзорной литературы (Searles/Nakagawa), не из опыта на продукте.
+
+**B. Верхний путь тепла** — радиация на сухую поверхность + теплопроводность сухого слоя ($k_{eff}$ по Maxwell–Eucken):
+
+$$J_s\Delta H_{sub} = q_{bot} + q_{top}, \qquad q_{top}=\frac{T_{rad}-T_p}{1/h_{rad} + H/k_{dry}}, \quad h_{rad}=4\varepsilon_{em}\sigma T_m^3$$
+
+Сухой корж теплоизолирует ($k_{eff}\sim0.01$ Вт/мК), поэтому верхний путь заметнее в начале (тонкий сухой слой) и ускоряет сушку на единицы процентов.
+
+![Усиления E/D/F/B](enhancements.png)
+
+```bash
+uv run python enhancements.py    # enhancements.png
+```
+
+---
+
 ## 7. Структура и запуск
 
 Файлы:
@@ -175,13 +211,16 @@ m.primary_drying(-20.0, 0.10, rp_func=rp)
 - **`demo.py`** → `results.png` — 3 эксперимента (заморозка, коллапс, оптимум).
 - **`compare.py`** → `comparison.png` — сравнение базовой и улучшенной модели.
 - **`rp_demo.py`** → `rp_theory.png` — теоретический $R_p$ и его влияние на время.
+- **`enhancements.py`** → `enhancements.png` — усиления E (τ), D (dusty-gas), F (поры из заморозки), B (верхний путь тепла).
 - **`predict_tg.py`** — безэкспериментальная оценка $T_g'$/$T_c$ (Gordon-Taylor/Фокс).
+- **`ronzi_compare/`** — валидация против Ronzi et al. 2003 (Factor VIII/IX).
 - **`REPORT.md`** — развёрнутый разбор и выводы.
 
 ```bash
-uv run python demo.py        # results.png
-uv run python compare.py     # comparison.png
-uv run python rp_demo.py     # rp_theory.png
+uv run python demo.py          # results.png
+uv run python compare.py       # comparison.png
+uv run python rp_demo.py       # rp_theory.png
+uv run python enhancements.py  # enhancements.png
 ```
 
 ---
