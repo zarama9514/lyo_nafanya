@@ -14,6 +14,8 @@ process of high purity Factor VIII and Factor IX concentrates*, Chem. Eng. Proce
 uv run python compare_ronzi.py     # -> ronzi_vs_model.png
 ```
 
+![Модель vs Ronzi Fig. 5](ronzi_vs_model.png)
+
 ---
 
 ## 1. Что воспроизводим (условия Ronzi, Табл. 4)
@@ -119,6 +121,8 @@ Tb всегда на 1–5 °C теплее Tp (между ними слой л�
 ```bash
 uv run python verify_shapes.py     # -> verify_shapes.png
 ```
+
+![Одна модель: рампа vs const, Tp vs Tb](verify_shapes.png)
 
 ---
 
