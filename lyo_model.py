@@ -32,6 +32,8 @@ TORR = 133.322        # Па/Torr
 # перевод Rp из (Torr*cm2*h/g) в СИ (Pa*m2*s/kg):
 RP_TO_SI = TORR * 1e-4 * 3600.0 / 1e-3      # = 4.7996e4
 CAL = 4.184           # Дж/кал
+R_GAS = 8.314         # Дж/(моль*К)
+M_WATER = 0.018015    # кг/моль
 
 
 def p_ice(T_C):
@@ -66,6 +68,74 @@ def Rp_areal(H, Rp0, A1, A2, fcryst):
     return Rp_tp * RP_TO_SI
 
 
+# ========== ТЕОРЕТИЧЕСКИЙ R_p из МИКРОСТРУКТУРЫ (Кнудсен) ==========
+# Не требует эксперимента на R_p: пористость -- из концентрации, размер пор --
+# из режима заморозки, извилистость -- из пористости. Режим течения пара при
+# ~10 Па -- кнудсеновский (длина своб. пробега >> размер пор).
+
+# типичные радиусы пор (м) по протоколу заморозки (= ~ размер кристаллов льда):
+PORE_BY_REGIME = {
+    "controlled_nucleation": 40e-6,   # крупные кристаллы, низкое R_p
+    "annealed":              35e-6,
+    "slow_shelf":            22e-6,
+    "normal":                18e-6,
+    "fast":                   8e-6,
+    "LN2":                    6e-6,    # мелкие кристаллы, высокое R_p
+}
+
+
+def porosity_from_conc(cs, rho_solid=1580.0, rho_water=1000.0):
+    """Пористость сухого коржа = объёмная доля бывшего льда = 1 - φ_solid.
+    cs -- масс. доля сухого в исходном растворе."""
+    v_solid = cs / rho_solid
+    v_water = (1.0 - cs) / rho_water
+    phi_solid = v_solid / (v_solid + v_water)
+    return 1.0 - phi_solid
+
+
+def mean_speed(T_C):
+    """Средняя тепловая скорость молекул воды, м/с."""
+    T = T_C + 273.15
+    return np.sqrt(8.0 * R_GAS * T / (np.pi * M_WATER))
+
+
+def pore_radius(regime=None, cooling_rate=None):
+    """Радиус пор r_pore [м]. Приоритет -- таблица режимов; иначе оценка по
+    скорости охлаждения d ~ rate^(-0.4) (мелкие кристаллы при быстром охл.)."""
+    if regime is not None:
+        return PORE_BY_REGIME[regime]
+    if cooling_rate is not None:               # rate в °C/мин
+        # калибровка: ~1 °C/мин -> ~18 мкм (режим "normal")
+        return 18e-6 * (1.0 / max(cooling_rate, 1e-3)) ** 0.4
+    return PORE_BY_REGIME["normal"]
+
+
+def Rp_knudsen_areal(H, cs, r_pore, tau=None, T_C=-25.0,
+                     rho_solid=1580.0, Rp0_skin_torr=0.5):
+    """Площадно-нормированное R_p [СИ] из кнудсеновской диффузии через корж.
+
+      R_p(H) = R_p0_skin + (R*T)/(M*D_eff) * H
+      D_eff  = (eps/tau) * D_K,   D_K = (2/3)*r_pore*v_mean
+      eps    = пористость(cs),    tau = eps^(-1/2) (Бруггеман)
+
+    Линейна по толщине H -> прямо даёт наклон R_p(H) без подгонки.
+    R_p0_skin -- малый интерсепт (плотная корка на поверхности), Torr*cm2*h/g.
+    """
+    eps = porosity_from_conc(cs, rho_solid)
+    if tau is None:
+        tau = eps ** (-0.5)                    # Бруггеман
+    Dk = (2.0 / 3.0) * r_pore * mean_speed(T_C)
+    Deff = eps / tau * Dk
+    T = T_C + 273.15
+    slope = R_GAS * T / (M_WATER * Deff)        # СИ, на метр толщины
+    return Rp0_skin_torr * RP_TO_SI + slope * H
+
+
+def Rp_at_1cm_torr(cs, r_pore, **kw):
+    """Удобный вывод: R_p при H=1 см в Torr*cm2*h/g (для сверки с литературой)."""
+    return Rp_knudsen_areal(0.01, cs, r_pore, **kw) / RP_TO_SI
+
+
 # ----------------------------- коллапс -----------------------------------
 def viscosity_amorphous(T_C, Tg_prime_C, eta_g=1e12, C1=17.4, C2=51.6):
     """Вязкость аморфной фазы (WLF) над Tg'. eta_g~1e12 Па*с в стекле."""
@@ -89,8 +159,9 @@ def collapse_number(T_C, Tg_prime_C, Tc_C):
 
 
 # ----------------- УЛУЧШЕННАЯ динамическая модель сушки -------------------
-def solve_step(H, Ts_C, Pc_torr, L0, Rp0, A1, A2, fcryst, Ap, Av):
+def solve_step(H, Ts_C, Pc_torr, L0, rp_func, Ap, Av):
     """Решает квазистационарную систему на текущей толщине сухого слоя H.
+    rp_func(H) -> площадно-нормированное R_p [СИ].
     Возвращает (Tp_C, Tb_C, Js) -- Js = поток массы на ед. площади [кг/(м2 с)].
 
     Уравнения (на единицу площади продукта):
@@ -100,7 +171,7 @@ def solve_step(H, Ts_C, Pc_torr, L0, Rp0, A1, A2, fcryst, Ap, Av):
     """
     Kv = Kv_of_Pc(Pc_torr)
     Pc = Pc_torr * TORR
-    Rp = Rp_areal(H, Rp0, A1, A2, fcryst)
+    Rp = rp_func(H)
     L_froz = max(L0 - H, 1e-5)
 
     def residual(Tp):
@@ -144,13 +215,18 @@ def solve_step(H, Ts_C, Pc_torr, L0, Rp0, A1, A2, fcryst, Ap, Av):
 
 def primary_drying(Ts_C, Pc_torr, L0=0.01, Rp0=0.5, A1=20.0, A2=4.0,
                    dT_super=10.0, Ap=3.80e-4, Av=4.71e-4,
-                   Tc_C=-32.0, Tg_prime_C=-34.0, dt=60.0, t_max=3e5):
+                   Tc_C=-32.0, Tg_prime_C=-34.0, dt=60.0, t_max=3e5,
+                   rp_func=None):
     """Интегрирует первичную сушку до полного ухода льда (H -> L0).
 
     Ts_C, Pc_torr могут быть числом (постоянные) или callable(t).
+    rp_func(H) -- модель сопротивления (СИ). Если None -- эмпирическая
+    Rp_areal с масштабом заморозки fcryst (обратная совместимость).
     Возвращает словарь с траекториями и итоговым временем/риском коллапса.
     """
     fcryst = crystal_factor(dT_super)
+    if rp_func is None:
+        rp_func = lambda H: Rp_areal(H, Rp0, A1, A2, fcryst)
     H = 0.0
     t = 0.0
     ts, Hs, Tps, Tbs, Js_s, Co_s = [], [], [], [], [], []
@@ -162,7 +238,7 @@ def primary_drying(Ts_C, Pc_torr, L0=0.01, Rp0=0.5, A1=20.0, A2=4.0,
     while H < L0 and t < t_max:
         Ts = getval(Ts_C, t)
         Pc = getval(Pc_torr, t)
-        Tp, Tb, Js = solve_step(H, Ts, Pc, L0, Rp0, A1, A2, fcryst, Ap, Av)
+        Tp, Tb, Js = solve_step(H, Ts, Pc, L0, rp_func, Ap, Av)
         dHdt = Js / RHO_ICE_CAKE
         Co = collapse_number(Tp, Tg_prime_C, Tc_C)
         if Co >= 1.0:
