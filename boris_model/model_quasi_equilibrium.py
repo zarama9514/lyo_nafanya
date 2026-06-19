@@ -26,11 +26,16 @@ def solve_front_bottom(Ts_K, Pch_torr, l_m, p: ph.Params):
         Js = ph.subl_flux_areal(Ti, Pch_torr, l_m, p)
         q = ph.delta_Hs(Ti) * p.Ap * Js                 # Вт на виалу
         # k льда берём при СРЕДНЕЙ температуре столба льда (Ti+Tb)/2; Tb зависит
-        # от k -> несколько самосогласованных итераций (важно при k(T))
+        # от k -> самосогласованная итерация до |ΔTb| < tol (важно при k(T))
         Tb = Ti
-        for _ in range(4):
+        tol = 1e-3
+        for _ in range(50):                             # предохранитель
             k = ph.k_ice(0.5 * (Ti + Tb))
-            Tb = Ti + q * L_ice / (k * p.Ap)            # из кондукции по льду
+            Tb_new = Ti + q * L_ice / (k * p.Ap)        # из кондукции по льду
+            if abs(Tb_new - Tb) < tol:
+                Tb = Tb_new
+                break
+            Tb = Tb_new
         return Tb, q, Js
 
     def residual(Ti):
