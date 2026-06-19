@@ -88,8 +88,10 @@ def _remap(T, N):
     return np.interp(xs_new, xs_old, T)
 
 
-def run(Ts_lim_K, Pch_torr, p: ph.Params):
-    """Симуляция первичной сушки (теплопроводность). Возвращает ряды и сводку."""
+def run(Ts_lim_K, Pch_torr, p: ph.Params, record_profiles=False):
+    """Симуляция первичной сушки (теплопроводность). Возвращает ряды и сводку.
+    record_profiles=True -> дополнительно сохраняет профиль T по высоте, толщину
+    сухого кейка l и время на каждом шаге (для анимации температурной карты)."""
     N = p.n_layers
     t = 0.0
     l = 0.0
@@ -97,6 +99,7 @@ def run(Ts_lim_K, Pch_torr, p: ph.Params):
     T = np.full(N, Tfr)                            # старт: равновесие = Tfreeze
     rows_t, rows_Ts, rows_Tmin, rows_Tmax = [], [], [], []
     rows_gmin, rows_gmax, rows_rate = [], [], []
+    prof_T, prof_l = [], []                        # для анимации (К, м)
 
     while ph.water_remaining_frac(l, p) > p.end_frac and t < p.t_max_h * 3600:
         Ts_mid = 0.5 * (ph.shelf_temp(t, p, Ts_lim_K)
@@ -113,6 +116,8 @@ def run(Ts_lim_K, Pch_torr, p: ph.Params):
         rows_gmin.append(float(np.min(grad)))
         rows_gmax.append(float(np.max(grad)))
         rows_rate.append(ph.subl_rate_g_per_h_vial(Js, p))
+        if record_profiles:
+            prof_T.append(T.copy()); prof_l.append(l)
 
         l += ph.dl_from_subl(Js, p.dt, p)
         T = _remap(T, N)                            # домен укоротился — переинтерп.
@@ -120,7 +125,7 @@ def run(Ts_lim_K, Pch_torr, p: ph.Params):
 
     arr = lambda x: np.asarray(x)
     Tmax = arr(rows_Tmax)
-    return dict(
+    out = dict(
         t_h=arr(rows_t), Ts_K=arr(rows_Ts),
         Tmin_K=arr(rows_Tmin), Tmax_K=arr(rows_Tmax),
         grad_min=arr(rows_gmin), grad_max=arr(rows_gmax),
@@ -130,3 +135,71 @@ def run(Ts_lim_K, Pch_torr, p: ph.Params):
         rate_mean_g_h=float(np.mean(rows_rate)) if rows_rate else 0.0,
         model="conduction",
     )
+    if record_profiles:
+        out["profiles_K"] = prof_T          # список профилей (К), узлы 0..N-1
+        out["profiles_l"] = arr(prof_l)     # толщина сухого кейка, м
+    return out
+
+
+def make_temperature_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_temperature.gif",
+                         fps=10, duration_s=20, width=100, height=400,
+                         cmap="coolwarm"):
+    """GIF температурной карты в виале (расчёт model_conduction).
+    Прямоугольник width×height px без рамок: низ = дно виалы (тёплое), верх =
+    фронт сублимации / сухой кейк (холодное). Сине-красная гамма (синий — холод,
+    красный — тепло), фиксированная шкала по всему процессу.
+    fps×duration_s кадров (по умолчанию 10×20 = 200)."""
+    import matplotlib.cm as cm
+    from matplotlib.colors import Normalize
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("нужен Pillow: uv add pillow")
+
+    res = run(Ts_lim_K, Pch_torr, p, record_profiles=True)
+    profiles = res["profiles_K"]            # список (К)
+    ls = res["profiles_l"]                  # толщина кейка, м
+    n_steps = len(profiles)
+    if n_steps == 0:
+        raise RuntimeError("нет шагов симуляции (сушка не идёт при этих параметрах)")
+
+    # фиксированная цветовая шкала (°C) по всему процессу
+    allT = np.concatenate([pr for pr in profiles]) - 273.15
+    norm = Normalize(vmin=float(allT.min()), vmax=float(allT.max()))
+    mapper = cm.ScalarMappable(norm=norm, cmap=cmap)
+
+    n_frames = int(round(fps * duration_s))
+    idx = np.linspace(0, n_steps - 1, n_frames).round().astype(int)
+    z_full = np.linspace(0.0, p.L, height)  # высота виалы -> пиксели (0=дно)
+
+    frames = []
+    for k in idx:
+        prof = profiles[k] - 273.15         # °C, узлы 0..N-1 по льду 0..(L-l)
+        l = ls[k]
+        L_ice = max(p.L - l, 1e-9)
+        z_ice = np.linspace(0.0, L_ice, len(prof))
+        col = np.empty(height)
+        in_ice = z_full <= L_ice
+        col[in_ice] = np.interp(z_full[in_ice], z_ice, prof)  # лёд: профиль
+        col[~in_ice] = prof[-1]             # сухой кейк выше фронта: T фронта (Ti)
+        img2d = np.repeat(col[:, None], width, axis=1)        # (height, width)
+        rgba = (mapper.to_rgba(img2d) * 255).astype(np.uint8) # цвет
+        rgb = rgba[..., :3]
+        rgb = np.flipud(rgb)                # row0 -> верх изображения (z=L сверху)
+        frames.append(Image.fromarray(rgb, mode="RGB"))
+
+    frames[0].save(path, save_all=True, append_images=frames[1:],
+                   duration=int(1000 / fps), loop=0)
+    return path, res
+
+
+if __name__ == "__main__":
+    import os
+    p = ph.Params()
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vial_temperature.gif")
+    path, res = make_temperature_gif(0 + 273.15, 0.15, p, out)
+    print(f"GIF сохранён: {path}")
+    print(f"  время сушки {res['t_dry_h']:.2f} ч, шагов {len(res['profiles_K'])}, "
+          f"кадров 200 (10 fps × 20 с)")
+    print(f"  диапазон T: {min(pr.min() for pr in res['profiles_K'])-273.15:.1f} .. "
+          f"{max(pr.max() for pr in res['profiles_K'])-273.15:.1f} °C")
