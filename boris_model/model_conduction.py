@@ -193,12 +193,72 @@ def make_temperature_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_temperatur
     return path, res
 
 
+def make_profile_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_profile.gif",
+                     fps=10, duration_s=20):
+    """GIF линейного профиля температуры по высоте (расчёт model_conduction):
+    ось X — координата z (см, 0 = дно виалы), ось Y — температура продукта (°C).
+    Сплошная линия — лёд (0..L-l), пунктир — сухой кейк выше фронта (при T фронта).
+    Оси фиксированы по всему процессу. fps×duration_s кадров (10×20 = 200)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("нужен Pillow: uv add pillow")
+
+    res = run(Ts_lim_K, Pch_torr, p, record_profiles=True)
+    profiles = res["profiles_K"]; ls = res["profiles_l"]; ts = res["t_h"]
+    n_steps = len(profiles)
+    if n_steps == 0:
+        raise RuntimeError("нет шагов симуляции (сушка не идёт при этих параметрах)")
+
+    allT = np.concatenate([pr for pr in profiles]) - 273.15
+    ymin, ymax = float(allT.min()), float(allT.max())
+    pad = 0.05 * (ymax - ymin + 1e-6)
+    L_cm = p.L_cm
+    n_frames = int(round(fps * duration_s))
+    idx = np.linspace(0, n_steps - 1, n_frames).round().astype(int)
+
+    fig, ax = plt.subplots(figsize=(6.0, 4.2), dpi=110)
+    frames = []
+    for k in idx:
+        prof = profiles[k] - 273.15
+        l_cm = ls[k] * 100.0
+        L_ice_cm = max(L_cm - l_cm, 1e-6)
+        z_ice = np.linspace(0.0, L_ice_cm, len(prof))
+        ax.clear()
+        ax.plot(z_ice, prof, "-", color="tab:red", lw=2.4, label="лёд")
+        if l_cm > 1e-4:                                  # сухой кейк выше фронта
+            ax.plot([L_ice_cm, L_cm], [prof[-1], prof[-1]], "--",
+                    color="tab:gray", lw=1.8, label="сухой кейк (T фронта)")
+        ax.axvline(L_ice_cm, color="tab:blue", ls=":", lw=1.2)  # фронт сублимации
+        ax.set_xlim(0, L_cm); ax.set_ylim(ymin - pad, ymax + pad)
+        ax.set_xlabel("координата z, см (0 = дно виалы)")
+        ax.set_ylabel("температура продукта, °C")
+        ax.set_title(f"Профиль T(z), t = {ts[k]:.2f} ч")
+        ax.grid(alpha=0.3); ax.legend(loc="upper right", fontsize=9)
+        fig.tight_layout()
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+        frames.append(Image.fromarray(buf, mode="RGB"))
+    plt.close(fig)
+
+    frames[0].save(path, save_all=True, append_images=frames[1:],
+                   duration=int(1000 / fps), loop=0)
+    return path, res
+
+
 if __name__ == "__main__":
     import os
     p = ph.Params()
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vial_temperature.gif")
-    path, res = make_temperature_gif(0 + 273.15, 0.15, p, out)
-    print(f"GIF сохранён: {path}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    path1, res = make_temperature_gif(0 + 273.15, 0.15, p,
+                                      os.path.join(here, "vial_temperature.gif"))
+    path2, _ = make_profile_gif(0 + 273.15, 0.15, p,
+                                os.path.join(here, "vial_profile.gif"))
+    print(f"GIF (карта):    {path1}")
+    print(f"GIF (профиль):  {path2}")
     print(f"  время сушки {res['t_dry_h']:.2f} ч, шагов {len(res['profiles_K'])}, "
           f"кадров 200 (10 fps × 20 с)")
     print(f"  диапазон T: {min(pr.min() for pr in res['profiles_K'])-273.15:.1f} .. "
