@@ -249,6 +249,86 @@ def make_profile_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_profile.gif",
     return path, res
 
 
+def make_combined_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_combined.gif",
+                      fps=10, duration_s=20, vial_w=100, vial_h=400, cmap="coolwarm"):
+    """Совмещённый GIF: СЛЕВА — температурная карта виалы (vial_w×vial_h px, низ =
+    дно/тёплое, верх = фронт/сухой кейк, сине-красная гамма), СПРАВА — линейный
+    профиль T(z) (ось X = z, см; ось Y = T продукта, °C). Обе панели синхронны.
+    fps×duration_s кадров (10×20 = 200)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    from matplotlib.colors import Normalize
+    from matplotlib.gridspec import GridSpec
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("нужен Pillow: uv add pillow")
+
+    res = run(Ts_lim_K, Pch_torr, p, record_profiles=True)
+    profiles = res["profiles_K"]; ls = res["profiles_l"]; ts = res["t_h"]
+    n_steps = len(profiles)
+    if n_steps == 0:
+        raise RuntimeError("нет шагов симуляции (сушка не идёт при этих параметрах)")
+
+    allT = np.concatenate([pr for pr in profiles]) - 273.15
+    vmin, vmax = float(allT.min()), float(allT.max())
+    pad = 0.05 * (vmax - vmin + 1e-6)
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    mapper = cm.ScalarMappable(norm=norm, cmap=cmap)
+    L_cm = p.L_cm
+    n_frames = int(round(fps * duration_s))
+    idx = np.linspace(0, n_steps - 1, n_frames).round().astype(int)
+    z_full = np.linspace(0.0, p.L, vial_h)
+
+    fig = plt.figure(figsize=(9.6, 4.4), dpi=110)
+    gs = GridSpec(1, 3, width_ratios=[1.0, 0.10, 3.2], wspace=0.6)
+    ax_vial = fig.add_subplot(gs[0, 0])
+    ax_cb = fig.add_subplot(gs[0, 1])
+    ax_plot = fig.add_subplot(gs[0, 2])
+    fig.colorbar(mapper, cax=ax_cb, label="T, °C")
+
+    frames = []
+    for k in idx:
+        prof = profiles[k] - 273.15
+        l = ls[k]; l_cm = l * 100.0
+        L_ice = max(p.L - l, 1e-9); L_ice_cm = max(L_cm - l_cm, 1e-6)
+        # --- левая панель: карта ---
+        z_ice = np.linspace(0.0, L_ice, len(prof))
+        col = np.empty(vial_h)
+        in_ice = z_full <= L_ice
+        col[in_ice] = np.interp(z_full[in_ice], z_ice, prof)
+        col[~in_ice] = prof[-1]
+        img2d = np.repeat(col[:, None], vial_w, axis=1)
+        ax_vial.clear()
+        ax_vial.imshow(img2d, origin="lower", cmap=cmap, norm=norm,
+                       aspect="auto", extent=[0, 1, 0, L_cm])
+        ax_vial.set_xticks([]); ax_vial.set_ylabel("z, см (0 = дно)")
+        ax_vial.set_title("виала")
+        # --- правая панель: профиль ---
+        z_ice_cm = np.linspace(0.0, L_ice_cm, len(prof))
+        ax_plot.clear()
+        ax_plot.plot(z_ice_cm, prof, "-", color="tab:red", lw=2.4, label="лёд")
+        if l_cm > 1e-4:
+            ax_plot.plot([L_ice_cm, L_cm], [prof[-1], prof[-1]], "--",
+                         color="tab:gray", lw=1.8, label="сухой кейк (T фронта)")
+        ax_plot.axvline(L_ice_cm, color="tab:blue", ls=":", lw=1.2)
+        ax_plot.set_xlim(0, L_cm); ax_plot.set_ylim(vmin - pad, vmax + pad)
+        ax_plot.set_xlabel("координата z, см (0 = дно виалы)")
+        ax_plot.set_ylabel("температура продукта, °C")
+        ax_plot.set_title(f"профиль T(z),  t = {ts[k]:.2f} ч")
+        ax_plot.grid(alpha=0.3); ax_plot.legend(loc="upper right", fontsize=9)
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+        frames.append(Image.fromarray(buf, mode="RGB"))
+    plt.close(fig)
+
+    frames[0].save(path, save_all=True, append_images=frames[1:],
+                   duration=int(1000 / fps), loop=0)
+    return path, res
+
+
 if __name__ == "__main__":
     import os
     p = ph.Params()
@@ -257,6 +337,9 @@ if __name__ == "__main__":
                                       os.path.join(here, "vial_temperature.gif"))
     path2, _ = make_profile_gif(0 + 273.15, 0.15, p,
                                 os.path.join(here, "vial_profile.gif"))
+    path3, _ = make_combined_gif(0 + 273.15, 0.15, p,
+                                 os.path.join(here, "vial_combined.gif"))
+    print(f"GIF (совмещённый): {path3}")
     print(f"GIF (карта):    {path1}")
     print(f"GIF (профиль):  {path2}")
     print(f"  время сушки {res['t_dry_h']:.2f} ч, шагов {len(res['profiles_K'])}, "
