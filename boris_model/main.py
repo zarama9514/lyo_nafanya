@@ -319,9 +319,10 @@ class App:
         self.sample_var = tk.StringVar(value=default_sample_name())
         self.ts_var = tk.StringVar(value=f"{self.p.Ts_demo_C:g}")
         self.pch_var = tk.StringVar(value=f"{self.p.Pch_demo_torr:g}")
-        self.status_var = tk.StringVar(value="Расчет не выполнен")
+        self.status_var = tk.StringVar(value="Расчет не выполнен. Нажмите «Запустить расчет».")
         self.busy = False
-        self.buttons = []
+        self.param_buttons = []
+        self.action_buttons = []
 
         self.left = ttk.Frame(root, padding=10)
         self.left.pack(side="left", fill="y")
@@ -329,9 +330,9 @@ class App:
         self.right.pack(side="right", fill="both", expand=True)
         self._build_params()
         self._build_results()
-        self.root.after(100, self.recalculate)
 
     def _build_params(self):
+        self.param_buttons = []
         for group, names in PARAM_GROUPS.items():
             frame = self.ttk.LabelFrame(self.left, text=group, padding=8)
             frame.pack(fill="x", pady=(0, 8))
@@ -341,7 +342,7 @@ class App:
                 self.ttk.Label(frame, text=f"... еще {len(names) - 8}").pack(anchor="w")
             btn = self.ttk.Button(frame, text="Изменить", command=lambda g=group: self.edit_group(g))
             btn.pack(fill="x", pady=(6, 0))
-            self.buttons.append(btn)
+            self.param_buttons.append(btn)
 
     def _build_results(self):
         top = self.ttk.Frame(self.right)
@@ -356,18 +357,28 @@ class App:
         self.ttk.Entry(controls, width=8, textvariable=self.ts_var).pack(side="left", padx=(4, 12))
         self.ttk.Label(controls, text="Pch, Torr").pack(side="left")
         self.ttk.Entry(controls, width=8, textvariable=self.pch_var).pack(side="left", padx=(4, 12))
+        run_btn = self.ttk.Button(controls, text="Запустить расчет", command=self.recalculate)
+        run_btn.pack(side="left", padx=(0, 8))
         curve_btn = self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries)
         curve_btn.pack(side="left", padx=(0, 8))
         save_btn = self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample)
         save_btn.pack(side="left")
-        self.buttons.extend([curve_btn, save_btn])
+        self.action_buttons.extend([run_btn, curve_btn, save_btn])
         self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
 
     def set_busy(self, busy, message=None):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for btn in self.buttons:
-            btn.configure(state=state)
+        live_buttons = []
+        for btn in [*self.param_buttons, *self.action_buttons]:
+            try:
+                if btn.winfo_exists():
+                    btn.configure(state=state)
+                    live_buttons.append(btn)
+            except self.tk.TclError:
+                pass
+        self.param_buttons = [btn for btn in self.param_buttons if btn in live_buttons]
+        self.action_buttons = [btn for btn in self.action_buttons if btn in live_buttons]
         if message:
             self.status_var.set(message)
 
@@ -404,7 +415,8 @@ class App:
             for child in self.left.winfo_children():
                 child.destroy()
             self._build_params()
-            self.recalculate()
+            self.data = None
+            self.status_var.set("Параметры сохранены. Нажмите «Запустить расчет».")
         self.ttk.Button(win, text="Сохранить", command=save).grid(row=len(entries), column=0, columnspan=2, sticky="ew", padx=8, pady=8)
 
     def recalculate(self):
@@ -491,6 +503,9 @@ class App:
 
     def save_sample(self):
         if self.busy:
+            return
+        if self.data is None:
+            self.status_var.set("Сначала нажмите «Запустить расчет».")
             return
         self.set_busy(True, "Готовлю GIF и сохраняю данные...")
         name = self.sample_var.get()
