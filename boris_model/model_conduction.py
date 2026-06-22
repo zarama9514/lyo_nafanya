@@ -282,8 +282,8 @@ def make_combined_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_combined.gif"
     idx = np.linspace(0, n_steps - 1, n_frames).round().astype(int)
     z_full = np.linspace(0.0, p.L, vial_h)
 
-    fig = plt.figure(figsize=(9.6, 4.4), dpi=110)
-    gs = GridSpec(1, 3, width_ratios=[1.0, 0.10, 3.2], wspace=0.6)
+    fig = plt.figure(figsize=(10.6, 4.6), dpi=110)
+    gs = GridSpec(1, 3, width_ratios=[1.0, 0.16, 3.35], wspace=0.9)
     ax_vial = fig.add_subplot(gs[0, 0])
     ax_cb = fig.add_subplot(gs[0, 1])
     ax_plot = fig.add_subplot(gs[0, 2])
@@ -319,6 +319,7 @@ def make_combined_gif(Ts_lim_K, Pch_torr, p: ph.Params, path="vial_combined.gif"
         ax_plot.set_ylabel("температура продукта, °C")
         ax_plot.set_title(f"профиль T(z),  t = {ts[k]:.2f} ч")
         ax_plot.grid(alpha=0.3); ax_plot.legend(loc="upper right", fontsize=9)
+        fig.subplots_adjust(left=0.07, right=0.98, wspace=0.9)
         fig.canvas.draw()
         buf = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
         frames.append(Image.fromarray(buf, mode="RGB"))

@@ -69,7 +69,7 @@ def run(Ts_lim_K, Pch_torr, p: ph.Params):
                         + ph.shelf_temp(t + p.dt, p, Ts_lim_K))
         Ti, Tb, q, Js = solve_front_bottom(Ts_mid, Pch_torr, l, p)
         L_ice = max(p.L - l, 1e-5)
-        grad = (Tb - Ti) / L_ice                        # К/м, постоянен по высоте
+        grad = -(Tb - Ti) / L_ice                       # К/м, постоянен по высоте
 
         rows_t.append(t / 3600.0)
         rows_Ts.append(Ts_mid)

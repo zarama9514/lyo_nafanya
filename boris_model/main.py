@@ -1,22 +1,25 @@
 """
-Управляющий модуль (ТЗ: "модуль управления").
+Управляющий модуль.
 
-- задаёт входные параметры (Params, литературные дефолты);
-- строит сетку (Ts_lim [K], Pch [Torr]) в заданных рамках;
-- прогоняет ОБА модуля (1.4 теплопроводность и 1.5 квазиравновесие) в каждой
-  точке сетки;
-- строит временные графики (1.3.1–1.3.3) для репрезентативной точки;
-- строит 2.5D-карты (1.3.4 A,B,C,D) для каждого модуля;
-- сохраняет сводку в CSV.
+Запуск по умолчанию открывает Tkinter-интерфейс:
+    uv run python boris_model/main.py
 
-Температуры на графиках — в °C. Запуск:  uv run python main.py
+Пакетный режим:
+    uv run python boris_model/main.py --cli
 """
-import os
 import csv
+import os
+import pickle
+import shutil
+import sys
+from dataclasses import fields
+from datetime import datetime
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 import physics as ph
 import model_quasi_equilibrium as qe
@@ -24,18 +27,59 @@ import model_conduction as cd
 
 K0 = 273.15
 HERE = os.path.dirname(os.path.abspath(__file__))
+OPTIONS_PATH = os.path.join(HERE, "options.pkl")
+OUTPUT_DIR = os.path.join(HERE, "output_data")
 MODELS = {"quasi_equilibrium": qe.run, "conduction": cd.run}
 
+PARAM_GROUPS = {
+    "Параметры аппаратуры": [
+        "Ap_cm2", "Av_cm2", "Kv_direct", "Kc", "Kd", "condenser_kg_h", "n_vials",
+    ],
+    "Параметры образца": [
+        "Tc_C", "L_cm", "cs", "rho_sol", "R0", "A1", "A2", "Rs",
+    ],
+    "Параметры процесса": [
+        "Ts_min_C", "Ts_max_C", "n_Ts", "Pch_min_torr", "Pch_max_torr", "n_Pc",
+        "map_levels", "Tfreeze_C", "ramp_K_per_min", "n_layers", "dt_h",
+        "end_frac", "t_max_h", "Ts_demo_C", "Pch_demo_torr",
+    ],
+}
 
-# ----------------------------- сетка --------------------------------------
-def build_grid(Ts_lim_C=(-35.0, 10.0), n_Ts=10, Pch_torr=(0.05, 0.30), n_Pc=7):
-    Ts_C = np.linspace(*Ts_lim_C, n_Ts)
-    Pch = np.linspace(*Pch_torr, n_Pc)
+
+def ensure_output_dir(path=OUTPUT_DIR):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def default_sample_name():
+    return datetime.now().strftime("%d.%m.%y %H-%M")
+
+
+def load_options():
+    if os.path.exists(OPTIONS_PATH):
+        with open(OPTIONS_PATH, "rb") as f:
+            obj = pickle.load(f)
+        if isinstance(obj, ph.Params):
+            return obj
+        if isinstance(obj, dict):
+            return ph.Params(**{k: v for k, v in obj.items() if hasattr(ph.Params, k)})
+    p = ph.Params()
+    save_options(p)
+    return p
+
+
+def save_options(p):
+    with open(OPTIONS_PATH, "wb") as f:
+        pickle.dump(p, f)
+
+
+def build_grid(p: ph.Params):
+    Ts_C = np.linspace(p.Ts_min_C, p.Ts_max_C, int(p.n_Ts))
+    Pch = np.linspace(max(0.01, p.Pch_min_torr), p.Pch_max_torr, int(p.n_Pc))
     return Ts_C, Pch
 
 
 def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
-    """Прогон одного модуля по всей сетке. Возвращает 2D массивы (Pch×Ts)."""
     nP, nT = len(Pch), len(Ts_C)
     t_dry = np.zeros((nP, nT))
     Tp_max = np.zeros((nP, nT))
@@ -49,98 +93,145 @@ def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
     return dict(t_dry=t_dry, Tp_max=Tp_max, rate=rate, Ts_C=Ts_C, Pch=Pch)
 
 
-# -------------------- временные графики (1.3.1–1.3.3) ---------------------
-def plot_timeseries(results, path, title):
-    """results: dict {model_name: res}. 3 панели: T мин/макс, градиент, Ts."""
-    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
+def plot_timeseries(results, path, title, p: ph.Params):
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.8), constrained_layout=True)
     colors = {"quasi_equilibrium": "tab:blue", "conduction": "tab:red"}
     for name, r in results.items():
         c = colors.get(name, "k")
-        ax[0].plot(r["t_h"], r["Tmin_K"] - K0, color=c, lw=2, label=f"{name}: Tmin (фронт)")
-        ax[0].plot(r["t_h"], r["Tmax_K"] - K0, color=c, ls="--", lw=1.8, label=f"{name}: Tmax (дно)")
+        ax[0].plot(r["t_h"], r["Tmin_K"] - K0, color=c, lw=2, label=f"{name}: Tmin")
+        ax[0].plot(r["t_h"], r["Tmax_K"] - K0, color=c, ls="--", lw=1.8, label=f"{name}: Tmax")
         ax[1].plot(r["t_h"], np.asarray(r["grad_max"]) / 100, color=c, lw=2, label=f"{name}: max dT/dz")
         ax[1].plot(r["t_h"], np.asarray(r["grad_min"]) / 100, color=c, ls="--", lw=1.8, label=f"{name}: min dT/dz")
-        ax[2].plot(r["t_h"], r["Ts_K"] - K0, color=c, lw=2, label=f"{name}: Ts")
-    ax[0].set_xlabel("время, ч"); ax[0].set_ylabel("температура продукта, °C")
-    ax[0].set_title("1.3.1 Tmin / Tmax продукта"); ax[0].legend(fontsize=8); ax[0].grid(alpha=0.3)
+    first = next(iter(results.values()))
+    ax[0].plot(first["t_h"], first["Ts_K"] - K0, color="tab:green", lw=2.0, label="Ts полки")
+    ax[0].set_xlabel("время, ч"); ax[0].set_ylabel("температура, °C")
+    ax[0].set_title("Температура продукта и полки"); ax[0].legend(fontsize=8); ax[0].grid(alpha=0.3)
     ax[1].set_xlabel("время, ч"); ax[1].set_ylabel("градиент dT/dz, K/см")
-    ax[1].set_title("1.3.2 градиент по высоте"); ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
-    ax[2].set_xlabel("время, ч"); ax[2].set_ylabel("температура полки, °C")
-    ax[2].set_title("1.3.3 температура полки"); ax[2].legend(fontsize=8); ax[2].grid(alpha=0.3)
-    fig.suptitle(title)
-    fig.savefig(path, dpi=130); plt.close(fig)
+    ax[1].set_title("Градиент по высоте"); ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
+    dry_times = [r["t_dry_h"] for r in results.values()]
+    fig.suptitle(f"{title}\nПолное время сушки: {max(dry_times):.2f} ч")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
-# ----------------------- 2.5D карты (1.3.4) -------------------------------
 def _tc_boundary_pch(grid, Tc_C):
-    """Для каждой Ts найти Pch, где Tp_max пересекает Tc (для линии в D)."""
     Ts_C, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
     out = []
-    for j, tsC in enumerate(Ts_C):
-        col = Tp[:, j]                                  # Tp_max(Pch) при данной Ts
+    for j, _ in enumerate(Ts_C):
+        col = Tp[:, j]
         pc_cross = np.nan
         for i in range(len(Pch) - 1):
             a, b = col[i] - Tc_C, col[i + 1] - Tc_C
             if a == 0:
                 pc_cross = Pch[i]; break
-            if a * b < 0:                               # смена знака -> интерполяция
+            if a * b < 0:
                 pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
                 break
         out.append(pc_cross)
     return np.array(out)
 
 
-def plot_maps(grid, Tc_C, path, title):
+def _extended_line(xs, ys, xmin, xmax):
+    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    ok = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[ok], ys[ok]
+    if len(xs) < 2:
+        return xs, ys
+    order = np.argsort(xs)
+    xs, ys = xs[order], ys[order]
+    return np.array([xmin, *xs, xmax]), np.interp([xmin, *xs, xmax], xs, ys)
+
+
+def _decorate_map_axes(ax):
+    ax.set_xlabel("Ts_lim, °C")
+    ax.set_ylabel("Pch, Torr")
+
+
+def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=True):
     Ts_C, Pch = grid["Ts_C"], grid["Pch"]
     X, Y = np.meshgrid(Ts_C, Pch)
+    cmap = "coolwarm"
+    if panel == "A":
+        c = ax.contourf(X, Y, grid["t_dry"], levels, cmap=cmap)
+        fig.colorbar(c, ax=ax, label="время сушки, ч")
+        ax.set_title("A. Время сушки")
+        _decorate_map_axes(ax)
+    elif panel == "B":
+        c = ax.contourf(X, Y, grid["Tp_max"], levels, cmap=cmap)
+        fig.colorbar(c, ax=ax, label="max Tp, °C")
+        cl = ax.contour(X, Y, grid["Tp_max"], levels=[Tc_C], colors="white", linewidths=2)
+        ax.clabel(cl, fmt=f"Tc={Tc_C:.0f}°C")
+        ax.set_title("B. Макс. температура продукта")
+        _decorate_map_axes(ax)
+    elif panel in ("C", "D"):
+        line_colors = plt.cm.coolwarm(np.linspace(0, 1, len(Ts_C)))
+        for j, tsC in enumerate(Ts_C):
+            label = f"Ts={tsC:.0f}" if panel == "C" and j % max(1, len(Ts_C) // 6) == 0 else None
+            ax.plot(Pch, grid["rate"][:, j], "-o" if panel == "C" else "-",
+                    ms=3, color=line_colors[j], alpha=0.9, label=label)
+        ax.set_xlabel("Pch, Torr")
+        ax.set_ylabel("ср. скорость сублимации, г/(ч·виал)")
+        ax.set_title("C. Скорость сублимации" if panel == "C" else "D. Рабочая область")
+        ax.grid(alpha=0.3)
+        sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=plt.Normalize(Ts_C.min(), Ts_C.max()))
+        fig.colorbar(sm, ax=ax, label="Ts_lim, °C")
+        if panel == "C" and add_legend:
+            ax.legend(fontsize=7, ncol=2)
+        if panel == "D":
+            data_max = float(np.nanmax(grid["rate"]))
+            data_pad = max(0.05, 0.12 * data_max)
+            pc_cross = _tc_boundary_pch(grid, Tc_C)
+            bx, by = [], []
+            for j, pc in enumerate(pc_cross):
+                if np.isfinite(pc):
+                    bx.append(pc)
+                    by.append(np.interp(pc, Pch, grid["rate"][:, j]))
+            ex, ey = _extended_line(bx, by, float(Pch.min()), float(Pch.max()))
+            if len(ex):
+                ax.plot(ex, ey, "k--", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
+            cap_g_h_vial = p.condenser_kg_h * 1000.0 / max(int(p.n_vials), 1)
+            cap_line = cap_g_h_vial
+            cap_label = "макс. массопоток оборудования"
+            if cap_g_h_vial > max(data_max * 4.0, data_max + data_pad):
+                cap_line = data_max + data_pad
+                cap_label = f"макс. массопоток оборудования: {cap_g_h_vial:.1f} г/ч/виал (выше шкалы)"
+            ax.axhline(cap_line, color="black", ls=":", lw=2, label=cap_label)
+            pc_star = 0.29 * 10 ** (0.019 * Tc_C)
+            if len(ex) >= 2:
+                y_star = float(np.interp(pc_star, ex, ey))
+            else:
+                y_star = float(np.nanmean(grid["rate"]))
+            ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
+                       edgecolor="black", linewidth=1.1, zorder=10,
+                       label="Teng & Pikal Pch(Tc)")
+            ax.set_xlim(float(Pch.min()), float(Pch.max()))
+            ax.set_ylim(min(-data_pad, np.nanmin(grid["rate"]) - data_pad), data_max + 1.7 * data_pad)
+            ax.legend(fontsize=8)
+
+
+def plot_maps(grid, Tc_C, path, title, p: ph.Params, panels_dir=None):
+    levels = max(2, int(p.map_levels))
     fig, ax = plt.subplots(2, 2, figsize=(15, 11), constrained_layout=True)
-
-    # A: время сушки
-    cA = ax[0, 0].contourf(X, Y, grid["t_dry"], 18, cmap="viridis")
-    fig.colorbar(cA, ax=ax[0, 0], label="время сушки, ч")
-    ax[0, 0].set_title("A. Время сушки [цвет]")
-    ax[0, 0].set_xlabel("Ts_lim, °C"); ax[0, 0].set_ylabel("Pch, Torr")
-
-    # B: макс. температура продукта + линия Tc
-    cB = ax[0, 1].contourf(X, Y, grid["Tp_max"], 18, cmap="magma")
-    fig.colorbar(cB, ax=ax[0, 1], label="max Tp, °C")
-    cl = ax[0, 1].contour(X, Y, grid["Tp_max"], levels=[Tc_C], colors="cyan", linewidths=2)
-    ax[0, 1].clabel(cl, fmt=f"Tc={Tc_C:.0f}°C")
-    ax[0, 1].set_title("B. Макс. температура продукта [цвет]")
-    ax[0, 1].set_xlabel("Ts_lim, °C"); ax[0, 1].set_ylabel("Pch, Torr")
-
-    # C: скорость сублимации vs Pch, семейство по Ts (цвет)
-    cmap = plt.cm.coolwarm(np.linspace(0, 1, len(Ts_C)))
-    for j, tsC in enumerate(Ts_C):
-        ax[1, 0].plot(Pch, grid["rate"][:, j], "-o", ms=3, color=cmap[j],
-                      label=f"Ts={tsC:.0f}" if j % 2 == 0 else None)
-    ax[1, 0].set_xlabel("Pch, Torr"); ax[1, 0].set_ylabel("ср. скорость сублимации, г/(ч·виал)")
-    ax[1, 0].set_title("C. Скорость сублимации (цвет = Ts)")
-    ax[1, 0].legend(fontsize=7, ncol=2); ax[1, 0].grid(alpha=0.3)
-
-    # D: то же + граница max(Tp)=Tc (область допустимого)
-    for j, tsC in enumerate(Ts_C):
-        ax[1, 1].plot(Pch, grid["rate"][:, j], "-", color=cmap[j], alpha=0.8)
-    pc_cross = _tc_boundary_pch(grid, Tc_C)
-    bx, by = [], []
-    for j, tsC in enumerate(Ts_C):
-        if np.isfinite(pc_cross[j]):
-            rate_at = np.interp(pc_cross[j], Pch, grid["rate"][:, j])
-            bx.append(pc_cross[j]); by.append(rate_at)
-    if bx:
-        order = np.argsort(bx)
-        ax[1, 1].plot(np.array(bx)[order], np.array(by)[order], "k--o", lw=2,
-                      label=f"граница max(Tp)=Tc={Tc_C:.0f}°C")
-        ax[1, 1].legend(fontsize=8)
-    else:
-        ax[1, 1].text(0.5, 0.95, f"во всей сетке max(Tp) не пересекает Tc={Tc_C:.0f}°C",
-                      transform=ax[1, 1].transAxes, ha="center", va="top", fontsize=9)
-    ax[1, 1].set_xlabel("Pch, Torr"); ax[1, 1].set_ylabel("ср. скорость сублимации, г/(ч·виал)")
-    ax[1, 1].set_title("D. То же + граница коллапса (ниже-левее линии — допустимо)")
-    ax[1, 1].grid(alpha=0.3)
-
+    for panel, axis in zip(("A", "B", "C", "D"), ax.flat):
+        _plot_panel(axis, fig, grid, panel, Tc_C, levels, p)
     fig.suptitle(title)
-    fig.savefig(path, dpi=130); plt.close(fig)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    if panels_dir:
+        os.makedirs(panels_dir, exist_ok=True)
+        for panel in ("A", "B", "C", "D"):
+            fig1, ax1 = plt.subplots(figsize=(8, 6), constrained_layout=True)
+            _plot_panel(ax1, fig1, grid, panel, Tc_C, levels, p)
+            fig1.suptitle(f"{title}: {panel}")
+            fig1.savefig(os.path.join(panels_dir, f"map_{panel}.png"), dpi=260)
+            plt.close(fig1)
+
+
+def plot_d_figure(grid, Tc_C, p: ph.Params, title="Карта D"):
+    fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+    _plot_panel(ax, fig, grid, "D", Tc_C, max(2, int(p.map_levels)), p)
+    fig.suptitle(title)
+    return fig
 
 
 def save_csv(grid, path, model_name):
@@ -154,39 +245,203 @@ def save_csv(grid, path, model_name):
                             f"{grid['rate'][i, j]:.5f}"])
 
 
-# --------------------------------- main -----------------------------------
-def main():
-    p = ph.Params()
-    print(f"Параметры: виала 10cc (Ap={p.Ap_cm2} Av={p.Av_cm2} см²), L={p.L_cm} см, "
-          f"cs={p.cs}, Tc={p.Tc_C}°C, dt={p.dt_h} ч, стоп при {p.end_frac*100:.0f}% воды")
-
-    # --- репрезентативная точка для временных кривых ---
-    Ts_demo_C, Pch_demo = 0.0, 0.15
-    ts_results = {name: fn(Ts_demo_C + K0, Pch_demo, p) for name, fn in MODELS.items()}
-    plot_timeseries(ts_results, os.path.join(HERE, "timeseries.png"),
-                    f"Временные кривые (Ts_lim={Ts_demo_C:.0f}°C, Pch={Pch_demo} Torr)")
-    for name, r in ts_results.items():
-        print(f"  [{name}] t={r['t_dry_h']:.2f} ч, max Tp={r['Tp_max_K']-K0:.1f}°C, "
-              f"ср.скорость={r['rate_mean_g_h']:.3f} г/(ч·виал)")
-
-    # --- сетка: оба модуля ---
-    Ts_C, Pch = build_grid()
-    print(f"Сетка: Ts_lim {Ts_C[0]:.0f}..{Ts_C[-1]:.0f}°C ({len(Ts_C)}), "
-          f"Pch {Pch[0]:.2f}..{Pch[-1]:.2f} Torr ({len(Pch)}). Прогон обоих модулей...")
+def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True):
+    ensure_output_dir(out_dir)
+    ts_results = {
+        name: fn(p.Ts_demo_C + K0, p.Pch_demo_torr, p)
+        for name, fn in MODELS.items()
+    }
+    plot_timeseries(
+        ts_results,
+        os.path.join(out_dir, "timeseries.png"),
+        f"Временные кривые (Ts_lim={p.Ts_demo_C:.1f}°C, Pch={p.Pch_demo_torr:.3f} Torr)",
+        p,
+    )
+    Ts_C, Pch = build_grid(p)
     grids = {}
     for name, fn in MODELS.items():
         grids[name] = run_grid(fn, Ts_C, Pch, p)
-        plot_maps(grids[name], p.Tc_C, os.path.join(HERE, f"maps_{name}.png"),
-                  f"2.5D карты — модуль: {name}")
-        save_csv(grids[name], os.path.join(HERE, f"grid_{name}.csv"), name)
-        print(f"  [{name}] карты -> maps_{name}.png, CSV -> grid_{name}.csv")
+        panel_dir = os.path.join(out_dir, f"maps_{name}_single")
+        plot_maps(grids[name], p.Tc_C, os.path.join(out_dir, f"maps_{name}.png"),
+                  f"2.5D карты — модуль: {name}", p, panels_dir=panel_dir)
+        save_csv(grids[name], os.path.join(out_dir, f"grid_{name}.csv"), name)
+    if make_gif:
+        cd.make_combined_gif(
+            p.Ts_demo_C + K0, p.Pch_demo_torr, p,
+            path=os.path.join(out_dir, "vial_combined_model.gif"),
+        )
+    return dict(ts_results=ts_results, grids=grids, out_dir=out_dir)
 
-    # --- сравнение моделей по времени сушки ---
+
+def copy_results_to_sample_folder(sample_name, source_dir=OUTPUT_DIR):
+    sample_name = sample_name.strip() or default_sample_name()
+    target = os.path.join(HERE, sample_name)
+    os.makedirs(target, exist_ok=True)
+    for name in os.listdir(source_dir):
+        src = os.path.join(source_dir, name)
+        dst = os.path.join(target, name)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    return target
+
+
+class App:
+    def __init__(self, root):
+        import tkinter as tk
+        from tkinter import ttk
+
+        self.tk = tk
+        self.ttk = ttk
+        self.root = root
+        self.root.title("Модель первичной сушки")
+        self.p = load_options()
+        self.data = None
+        self.sample_var = tk.StringVar(value=default_sample_name())
+        self.ts_var = tk.StringVar(value=f"{self.p.Ts_demo_C:g}")
+        self.pch_var = tk.StringVar(value=f"{self.p.Pch_demo_torr:g}")
+        self.status_var = tk.StringVar(value="Расчет не выполнен")
+
+        self.left = ttk.Frame(root, padding=10)
+        self.left.pack(side="left", fill="y")
+        self.right = ttk.Frame(root, padding=10)
+        self.right.pack(side="right", fill="both", expand=True)
+        self._build_params()
+        self._build_results()
+        self.recalculate()
+
+    def _build_params(self):
+        for group, names in PARAM_GROUPS.items():
+            frame = self.ttk.LabelFrame(self.left, text=group, padding=8)
+            frame.pack(fill="x", pady=(0, 8))
+            for name in names[:8]:
+                self.ttk.Label(frame, text=f"{name}: {getattr(self.p, name)}").pack(anchor="w")
+            if len(names) > 8:
+                self.ttk.Label(frame, text=f"... еще {len(names) - 8}").pack(anchor="w")
+            self.ttk.Button(frame, text="Изменить", command=lambda g=group: self.edit_group(g)).pack(fill="x", pady=(6, 0))
+
+    def _build_results(self):
+        top = self.ttk.Frame(self.right)
+        top.pack(fill="both", expand=True)
+        self.plot_holder = self.ttk.Frame(top)
+        self.plot_holder.pack(fill="both", expand=True)
+        self.ttk.Label(self.right, text="Название образца").pack(anchor="w", pady=(10, 0))
+        self.ttk.Entry(self.right, textvariable=self.sample_var).pack(fill="x")
+        controls = self.ttk.Frame(self.right)
+        controls.pack(fill="x", pady=8)
+        self.ttk.Label(controls, text="Ts, °C").pack(side="left")
+        self.ttk.Entry(controls, width=8, textvariable=self.ts_var).pack(side="left", padx=(4, 12))
+        self.ttk.Label(controls, text="Pch, Torr").pack(side="left")
+        self.ttk.Entry(controls, width=8, textvariable=self.pch_var).pack(side="left", padx=(4, 12))
+        self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries).pack(side="left", padx=(0, 8))
+        self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample).pack(side="left")
+        self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
+
+    def edit_group(self, group):
+        win = self.tk.Toplevel(self.root)
+        win.title(group)
+        win.transient(self.root)
+        win.grab_set()
+        entries = {}
+        for row, name in enumerate(PARAM_GROUPS[group]):
+            self.ttk.Label(win, text=name).grid(row=row, column=0, sticky="w", padx=8, pady=4)
+            ent = self.ttk.Entry(win, width=22)
+            ent.insert(0, "" if getattr(self.p, name) is None else str(getattr(self.p, name)))
+            ent.grid(row=row, column=1, padx=8, pady=4)
+            entries[name] = ent
+        def save():
+            values = {f.name: getattr(self.p, f.name) for f in fields(ph.Params)}
+            for name, ent in entries.items():
+                text = ent.get().strip()
+                old = getattr(self.p, name)
+                if text == "":
+                    values[name] = None if old is None or name == "Kv_direct" else old
+                elif isinstance(old, int):
+                    values[name] = int(text)
+                elif old is None and name == "Kv_direct":
+                    values[name] = float(text)
+                else:
+                    values[name] = float(text)
+            self.p = ph.Params(**values)
+            save_options(self.p)
+            self.ts_var.set(f"{self.p.Ts_demo_C:g}")
+            self.pch_var.set(f"{self.p.Pch_demo_torr:g}")
+            win.destroy()
+            for child in self.left.winfo_children():
+                child.destroy()
+            self._build_params()
+            self.recalculate()
+        self.ttk.Button(win, text="Сохранить", command=save).grid(row=len(entries), column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+
+    def recalculate(self):
+        self.status_var.set("Считаю карты...")
+        self.root.update_idletasks()
+        self.data = calculate_all(self.p, OUTPUT_DIR, make_gif=True)
+        self.draw_d()
+        self.status_var.set(f"Готово: {OUTPUT_DIR}")
+
+    def draw_d(self):
+        for child in self.plot_holder.winfo_children():
+            child.destroy()
+        fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_holder)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        canvas.get_tk_widget().bind("<Double-Button-1>", lambda _e: self.open_interactive_d())
+        plt.close(fig)
+
+    def open_interactive_d(self):
+        win = self.tk.Toplevel(self.root)
+        win.title("График D")
+        fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        toolbar = NavigationToolbar2Tk(canvas, win)
+        toolbar.update()
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def show_timeseries(self):
+        self.p.Ts_demo_C = float(self.ts_var.get())
+        self.p.Pch_demo_torr = float(self.pch_var.get())
+        save_options(self.p)
+        calculate_all(self.p, OUTPUT_DIR, make_gif=True)
+        path = os.path.join(OUTPUT_DIR, "timeseries.png")
+        win = self.tk.Toplevel(self.root)
+        win.title("Временные кривые")
+        img = self.tk.PhotoImage(file=path)
+        label = self.ttk.Label(win, image=img)
+        label.image = img
+        label.pack()
+
+    def save_sample(self):
+        target = copy_results_to_sample_folder(self.sample_var.get(), OUTPUT_DIR)
+        self.status_var.set(f"Сохранено: {target}")
+
+
+def cli_main():
+    p = load_options()
+    print(f"Параметры: виала 10cc (Ap={p.Ap_cm2} Av={p.Av_cm2} см²), L={p.L_cm} см, "
+          f"cs={p.cs}, Tc={p.Tc_C}°C, dt={p.dt_h} ч, стоп при {p.end_frac*100:.0f}% воды")
+    result = calculate_all(p, OUTPUT_DIR, make_gif=True)
+    grids = result["grids"]
     dt_diff = np.abs(grids["conduction"]["t_dry"] - grids["quasi_equilibrium"]["t_dry"])
-    print(f"Макс. расхождение времени сушки между модулями: {dt_diff.max():.3f} ч "
-          f"({100*dt_diff.max()/grids['quasi_equilibrium']['t_dry'].mean():.1f}% от среднего).")
-    print("Готово. Файлы: timeseries.png, maps_*.png, grid_*.csv")
+    print(f"Макс. расхождение времени сушки между модулями: {dt_diff.max():.3f} ч")
+    print(f"Готово. Файлы сохранены в {OUTPUT_DIR}")
+
+
+def gui_main():
+    import tkinter as tk
+    root = tk.Tk()
+    root.geometry("1280x820")
+    App(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    main()
+    if "--cli" in sys.argv:
+        cli_main()
+    else:
+        gui_main()
