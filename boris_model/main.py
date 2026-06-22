@@ -12,6 +12,7 @@ import os
 import pickle
 import shutil
 import sys
+import threading
 from dataclasses import fields
 from datetime import datetime
 
@@ -273,6 +274,21 @@ def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True):
     return dict(ts_results=ts_results, grids=grids, out_dir=out_dir)
 
 
+def calculate_timeseries_only(p: ph.Params, out_dir=OUTPUT_DIR):
+    ensure_output_dir(out_dir)
+    ts_results = {
+        name: fn(p.Ts_demo_C + K0, p.Pch_demo_torr, p)
+        for name, fn in MODELS.items()
+    }
+    plot_timeseries(
+        ts_results,
+        os.path.join(out_dir, "timeseries.png"),
+        f"Временные кривые (Ts_lim={p.Ts_demo_C:.1f}°C, Pch={p.Pch_demo_torr:.3f} Torr)",
+        p,
+    )
+    return ts_results
+
+
 def copy_results_to_sample_folder(sample_name, source_dir=OUTPUT_DIR):
     sample_name = sample_name.strip() or default_sample_name()
     target = os.path.join(HERE, sample_name)
@@ -304,6 +320,8 @@ class App:
         self.ts_var = tk.StringVar(value=f"{self.p.Ts_demo_C:g}")
         self.pch_var = tk.StringVar(value=f"{self.p.Pch_demo_torr:g}")
         self.status_var = tk.StringVar(value="Расчет не выполнен")
+        self.busy = False
+        self.buttons = []
 
         self.left = ttk.Frame(root, padding=10)
         self.left.pack(side="left", fill="y")
@@ -311,7 +329,7 @@ class App:
         self.right.pack(side="right", fill="both", expand=True)
         self._build_params()
         self._build_results()
-        self.recalculate()
+        self.root.after(100, self.recalculate)
 
     def _build_params(self):
         for group, names in PARAM_GROUPS.items():
@@ -321,7 +339,9 @@ class App:
                 self.ttk.Label(frame, text=f"{name}: {getattr(self.p, name)}").pack(anchor="w")
             if len(names) > 8:
                 self.ttk.Label(frame, text=f"... еще {len(names) - 8}").pack(anchor="w")
-            self.ttk.Button(frame, text="Изменить", command=lambda g=group: self.edit_group(g)).pack(fill="x", pady=(6, 0))
+            btn = self.ttk.Button(frame, text="Изменить", command=lambda g=group: self.edit_group(g))
+            btn.pack(fill="x", pady=(6, 0))
+            self.buttons.append(btn)
 
     def _build_results(self):
         top = self.ttk.Frame(self.right)
@@ -336,9 +356,20 @@ class App:
         self.ttk.Entry(controls, width=8, textvariable=self.ts_var).pack(side="left", padx=(4, 12))
         self.ttk.Label(controls, text="Pch, Torr").pack(side="left")
         self.ttk.Entry(controls, width=8, textvariable=self.pch_var).pack(side="left", padx=(4, 12))
-        self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries).pack(side="left", padx=(0, 8))
-        self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample).pack(side="left")
+        curve_btn = self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries)
+        curve_btn.pack(side="left", padx=(0, 8))
+        save_btn = self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample)
+        save_btn.pack(side="left")
+        self.buttons.extend([curve_btn, save_btn])
         self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
+
+    def set_busy(self, busy, message=None):
+        self.busy = busy
+        state = "disabled" if busy else "normal"
+        for btn in self.buttons:
+            btn.configure(state=state)
+        if message:
+            self.status_var.set(message)
 
     def edit_group(self, group):
         win = self.tk.Toplevel(self.root)
@@ -377,13 +408,33 @@ class App:
         self.ttk.Button(win, text="Сохранить", command=save).grid(row=len(entries), column=0, columnspan=2, sticky="ew", padx=8, pady=8)
 
     def recalculate(self):
-        self.status_var.set("Считаю карты...")
-        self.root.update_idletasks()
-        self.data = calculate_all(self.p, OUTPUT_DIR, make_gif=True)
+        if self.busy:
+            return
+        self.set_busy(True, "Считаю карты в фоне...")
+        p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
+
+        def work():
+            try:
+                data = calculate_all(p_snapshot, OUTPUT_DIR, make_gif=False)
+            except Exception as exc:
+                message = str(exc)
+                self.root.after(0, lambda: self.finish_with_error(message))
+                return
+            self.root.after(0, lambda: self.finish_recalculate(data))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def finish_recalculate(self, data):
+        self.data = data
         self.draw_d()
-        self.status_var.set(f"Готово: {OUTPUT_DIR}")
+        self.set_busy(False, f"Готово: {OUTPUT_DIR}. GIF будет создан при сохранении данных.")
+
+    def finish_with_error(self, message):
+        self.set_busy(False, f"Ошибка расчета: {message}")
 
     def draw_d(self):
+        if not self.data:
+            return
         for child in self.plot_holder.winfo_children():
             child.destroy()
         fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
@@ -394,6 +445,8 @@ class App:
         plt.close(fig)
 
     def open_interactive_d(self):
+        if not self.data:
+            return
         win = self.tk.Toplevel(self.root)
         win.title("График D")
         fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
@@ -404,11 +457,31 @@ class App:
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def show_timeseries(self):
+        if self.busy:
+            return
         self.p.Ts_demo_C = float(self.ts_var.get())
         self.p.Pch_demo_torr = float(self.pch_var.get())
         save_options(self.p)
-        calculate_all(self.p, OUTPUT_DIR, make_gif=True)
+        self.set_busy(True, "Считаю временную кривую...")
+        p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
+
+        def work():
+            try:
+                calculate_timeseries_only(p_snapshot, OUTPUT_DIR)
+            except Exception as exc:
+                message = str(exc)
+                self.root.after(0, lambda: self.finish_with_error(message))
+                return
+            self.root.after(0, self.open_timeseries_window)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def open_timeseries_window(self):
+        self.set_busy(False, f"Готово: {OUTPUT_DIR}")
         path = os.path.join(OUTPUT_DIR, "timeseries.png")
+        if sys.platform == "darwin":
+            os.system(f"open {path!r}")
+            return
         win = self.tk.Toplevel(self.root)
         win.title("Временные кривые")
         img = self.tk.PhotoImage(file=path)
@@ -417,8 +490,28 @@ class App:
         label.pack()
 
     def save_sample(self):
-        target = copy_results_to_sample_folder(self.sample_var.get(), OUTPUT_DIR)
-        self.status_var.set(f"Сохранено: {target}")
+        if self.busy:
+            return
+        self.set_busy(True, "Готовлю GIF и сохраняю данные...")
+        name = self.sample_var.get()
+        p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
+
+        def work():
+            try:
+                gif_path = os.path.join(OUTPUT_DIR, "vial_combined_model.gif")
+                cd.make_combined_gif(p_snapshot.Ts_demo_C + K0, p_snapshot.Pch_demo_torr,
+                                     p_snapshot, path=gif_path)
+                target = copy_results_to_sample_folder(name, OUTPUT_DIR)
+            except Exception as exc:
+                message = str(exc)
+                self.root.after(0, lambda: self.finish_with_error(message))
+                return
+            self.root.after(0, lambda: self.finish_save(target))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def finish_save(self, target):
+        self.set_busy(False, f"Сохранено: {target}")
 
 
 def cli_main():
