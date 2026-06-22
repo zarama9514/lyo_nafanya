@@ -143,6 +143,15 @@ def _extended_line(xs, ys, xmin, xmax):
     return np.array([xmin, *xs, xmax]), np.interp([xmin, *xs, xmax], xs, ys)
 
 
+def tang_pikal_pch_torr(Tp_C):
+    return 0.29 * 10 ** (0.019 * Tp_C)
+
+
+def sublimation_rate_for_tp_pch(Tp_C, Pch_torr, p: ph.Params, l_m=0.0):
+    Js = ph.subl_flux_areal(Tp_C + K0, Pch_torr, l_m, p)
+    return ph.subl_rate_g_per_h_vial(Js, p)
+
+
 def _decorate_map_axes(ax):
     ax.set_xlabel("Ts_lim, °C")
     ax.set_ylabel("Pch, Torr")
@@ -179,7 +188,10 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
         if panel == "C" and add_legend:
             ax.legend(fontsize=7, ncol=2)
         if panel == "D":
-            data_max = float(np.nanmax(grid["rate"]))
+            tp_star_C = Tc_C
+            pc_star = tang_pikal_pch_torr(tp_star_C)
+            y_star = sublimation_rate_for_tp_pch(tp_star_C, pc_star, p, l_m=0.0)
+            data_max = float(max(np.nanmax(grid["rate"]), y_star))
             data_pad = max(0.05, 0.12 * data_max)
             pc_cross = _tc_boundary_pch(grid, Tc_C)
             bx, by = [], []
@@ -197,14 +209,9 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 cap_line = data_max + data_pad
                 cap_label = f"макс. массопоток оборудования: {cap_g_h_vial:.1f} г/ч/виал (выше шкалы)"
             ax.axhline(cap_line, color="black", ls=":", lw=2, label=cap_label)
-            pc_star = 0.29 * 10 ** (0.019 * Tc_C)
-            if len(ex) >= 2:
-                y_star = float(np.interp(pc_star, ex, ey))
-            else:
-                y_star = float(np.nanmean(grid["rate"]))
             ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
                        edgecolor="black", linewidth=1.1, zorder=10,
-                       label="Teng & Pikal Pch(Tc)")
+                       label="Tang & Pikal: Pch(Tp=Tc), l=0")
             ax.set_xlim(float(Pch.min()), float(Pch.max()))
             ax.set_ylim(min(-data_pad, np.nanmin(grid["rate"]) - data_pad), data_max + 1.7 * data_pad)
             ax.legend(fontsize=8)
