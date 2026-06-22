@@ -42,9 +42,12 @@ PARAM_GROUPS = {
     "Параметры процесса": [
         "Ts_min_C", "Ts_max_C", "n_Ts", "Pch_min_torr", "Pch_max_torr", "n_Pc",
         "map_levels", "Tfreeze_C", "ramp_K_per_min", "n_layers", "dt_h",
-        "end_frac", "t_max_h", "Ts_demo_C", "Pch_demo_torr",
+        "end_frac", "t_max_h",
     ],
 }
+
+DEFAULT_CURVE_TS_C = 0.0
+DEFAULT_CURVE_PCH_TORR = 0.15
 
 
 def ensure_output_dir(path=OUTPUT_DIR):
@@ -57,13 +60,14 @@ def default_sample_name():
 
 
 def load_options():
+    current_names = {f.name for f in fields(ph.Params)}
     if os.path.exists(OPTIONS_PATH):
         with open(OPTIONS_PATH, "rb") as f:
             obj = pickle.load(f)
         if isinstance(obj, ph.Params):
-            return obj
+            return ph.Params(**{k: getattr(obj, k) for k in current_names if hasattr(obj, k)})
         if isinstance(obj, dict):
-            return ph.Params(**{k: v for k, v in obj.items() if hasattr(ph.Params, k)})
+            return ph.Params(**{k: v for k, v in obj.items() if k in current_names})
     p = ph.Params()
     save_options(p)
     return p
@@ -94,8 +98,8 @@ def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
     return dict(t_dry=t_dry, Tp_max=Tp_max, rate=rate, Ts_C=Ts_C, Pch=Pch)
 
 
-def plot_timeseries(results, path, title, p: ph.Params):
-    fig, ax = plt.subplots(1, 2, figsize=(13, 4.8), constrained_layout=True)
+def make_timeseries_figure(results, title, figsize=(10.5, 5.0)):
+    fig, ax = plt.subplots(1, 2, figsize=figsize, constrained_layout=True)
     colors = {"quasi_equilibrium": "tab:blue", "conduction": "tab:red"}
     for name, r in results.items():
         c = colors.get(name, "k")
@@ -111,6 +115,11 @@ def plot_timeseries(results, path, title, p: ph.Params):
     ax[1].set_title("Градиент по высоте"); ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
     dry_times = [r["t_dry_h"] for r in results.values()]
     fig.suptitle(f"{title}\nПолное время сушки: {max(dry_times):.2f} ч")
+    return fig
+
+
+def plot_timeseries(results, path, title, p: ph.Params):
+    fig = make_timeseries_figure(results, title, figsize=(13, 4.8))
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
@@ -253,18 +262,9 @@ def save_csv(grid, path, model_name):
                             f"{grid['rate'][i, j]:.5f}"])
 
 
-def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True):
+def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True,
+                  curve_Ts_C=DEFAULT_CURVE_TS_C, curve_Pch_torr=DEFAULT_CURVE_PCH_TORR):
     ensure_output_dir(out_dir)
-    ts_results = {
-        name: fn(p.Ts_demo_C + K0, p.Pch_demo_torr, p)
-        for name, fn in MODELS.items()
-    }
-    plot_timeseries(
-        ts_results,
-        os.path.join(out_dir, "timeseries.png"),
-        f"Временные кривые (Ts_lim={p.Ts_demo_C:.1f}°C, Pch={p.Pch_demo_torr:.3f} Torr)",
-        p,
-    )
     Ts_C, Pch = build_grid(p)
     grids = {}
     for name, fn in MODELS.items():
@@ -275,22 +275,22 @@ def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True):
         save_csv(grids[name], os.path.join(out_dir, f"grid_{name}.csv"), name)
     if make_gif:
         cd.make_combined_gif(
-            p.Ts_demo_C + K0, p.Pch_demo_torr, p,
+            curve_Ts_C + K0, curve_Pch_torr, p,
             path=os.path.join(out_dir, "vial_combined_model.gif"),
         )
-    return dict(ts_results=ts_results, grids=grids, out_dir=out_dir)
+    return dict(grids=grids, out_dir=out_dir)
 
 
-def calculate_timeseries_only(p: ph.Params, out_dir=OUTPUT_DIR):
+def calculate_timeseries_only(p: ph.Params, Ts_C, Pch_torr, out_dir=OUTPUT_DIR):
     ensure_output_dir(out_dir)
     ts_results = {
-        name: fn(p.Ts_demo_C + K0, p.Pch_demo_torr, p)
+        name: fn(Ts_C + K0, Pch_torr, p)
         for name, fn in MODELS.items()
     }
     plot_timeseries(
         ts_results,
         os.path.join(out_dir, "timeseries.png"),
-        f"Временные кривые (Ts_lim={p.Ts_demo_C:.1f}°C, Pch={p.Pch_demo_torr:.3f} Torr)",
+        f"Временные кривые (Ts_lim={Ts_C:.1f}°C, Pch={Pch_torr:.3f} Torr)",
         p,
     )
     return ts_results
@@ -324,8 +324,8 @@ class App:
         self.p = load_options()
         self.data = None
         self.sample_var = tk.StringVar(value=default_sample_name())
-        self.ts_var = tk.StringVar(value=f"{self.p.Ts_demo_C:g}")
-        self.pch_var = tk.StringVar(value=f"{self.p.Pch_demo_torr:g}")
+        self.ts_var = tk.StringVar(value=f"{DEFAULT_CURVE_TS_C:g}")
+        self.pch_var = tk.StringVar(value=f"{DEFAULT_CURVE_PCH_TORR:g}")
         self.status_var = tk.StringVar(value="Расчет не выполнен. Нажмите «Запустить расчет».")
         self.busy = False
         self.param_buttons = []
@@ -416,8 +416,6 @@ class App:
                     values[name] = float(text)
             self.p = ph.Params(**values)
             save_options(self.p)
-            self.ts_var.set(f"{self.p.Ts_demo_C:g}")
-            self.pch_var.set(f"{self.p.Pch_demo_torr:g}")
             win.destroy()
             for child in self.left.winfo_children():
                 child.destroy()
@@ -431,10 +429,14 @@ class App:
             return
         self.set_busy(True, "Считаю карты в фоне...")
         p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
+        curve_Ts_C = float(self.ts_var.get())
+        curve_Pch_torr = float(self.pch_var.get())
 
         def work():
             try:
-                data = calculate_all(p_snapshot, OUTPUT_DIR, make_gif=False)
+                data = calculate_all(p_snapshot, OUTPUT_DIR, make_gif=False,
+                                     curve_Ts_C=curve_Ts_C,
+                                     curve_Pch_torr=curve_Pch_torr)
             except Exception as exc:
                 message = str(exc)
                 self.root.after(0, lambda: self.finish_with_error(message))
@@ -459,8 +461,10 @@ class App:
         fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
         canvas = FigureCanvasTkAgg(fig, master=self.plot_holder)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        canvas.get_tk_widget().bind("<Double-Button-1>", lambda _e: self.open_interactive_d())
+        widget = canvas.get_tk_widget()
+        widget.configure(cursor="hand2")
+        widget.pack(fill="both", expand=True)
+        widget.bind("<Button-1>", lambda _e: self.open_interactive_d())
         plt.close(fig)
 
     def open_interactive_d(self):
@@ -478,35 +482,34 @@ class App:
     def show_timeseries(self):
         if self.busy:
             return
-        self.p.Ts_demo_C = float(self.ts_var.get())
-        self.p.Pch_demo_torr = float(self.pch_var.get())
-        save_options(self.p)
+        Ts_C = float(self.ts_var.get())
+        Pch_torr = float(self.pch_var.get())
         self.set_busy(True, "Считаю временную кривую...")
         p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
 
         def work():
             try:
-                calculate_timeseries_only(p_snapshot, OUTPUT_DIR)
+                results = calculate_timeseries_only(p_snapshot, Ts_C, Pch_torr, OUTPUT_DIR)
             except Exception as exc:
                 message = str(exc)
                 self.root.after(0, lambda: self.finish_with_error(message))
                 return
-            self.root.after(0, self.open_timeseries_window)
+            self.root.after(0, lambda: self.open_timeseries_window(results, Ts_C, Pch_torr))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def open_timeseries_window(self):
+    def open_timeseries_window(self, results, Ts_C, Pch_torr):
         self.set_busy(False, f"Готово: {OUTPUT_DIR}")
-        path = os.path.join(OUTPUT_DIR, "timeseries.png")
-        if sys.platform == "darwin":
-            os.system(f"open {path!r}")
-            return
         win = self.tk.Toplevel(self.root)
         win.title("Временные кривые")
-        img = self.tk.PhotoImage(file=path)
-        label = self.ttk.Label(win, image=img)
-        label.image = img
-        label.pack()
+        win.geometry("1100x650")
+        title = f"Временные кривые (Ts_lim={Ts_C:.1f}°C, Pch={Pch_torr:.3f} Torr)"
+        fig = make_timeseries_figure(results, title, figsize=(10.5, 5.0))
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        toolbar = NavigationToolbar2Tk(canvas, win)
+        toolbar.update()
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def save_sample(self):
         if self.busy:
@@ -517,12 +520,13 @@ class App:
         self.set_busy(True, "Готовлю GIF и сохраняю данные...")
         name = self.sample_var.get()
         p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
+        Ts_C = float(self.ts_var.get())
+        Pch_torr = float(self.pch_var.get())
 
         def work():
             try:
                 gif_path = os.path.join(OUTPUT_DIR, "vial_combined_model.gif")
-                cd.make_combined_gif(p_snapshot.Ts_demo_C + K0, p_snapshot.Pch_demo_torr,
-                                     p_snapshot, path=gif_path)
+                cd.make_combined_gif(Ts_C + K0, Pch_torr, p_snapshot, path=gif_path)
                 target = copy_results_to_sample_folder(name, OUTPUT_DIR)
             except Exception as exc:
                 message = str(exc)

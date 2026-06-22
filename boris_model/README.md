@@ -39,10 +39,11 @@ uv run python boris_model/model_conduction.py
 Функция `make_combined_gif` строит **совмещённую** анимацию: слева — карта виалы,
 по центру — цветовая шкала, справа — синхронный профиль `T(z)`. Файл
 `vial_combined.gif`.
-Выход: `output_data/timeseries.png` (Tmin/Tmax продукта и Ts, градиент, полное
-время сушки), `maps_quasi_equilibrium.png`, `maps_conduction.png` (карты A/B/C/D),
-отдельные карты высокого разрешения в `maps_*_single/`, `grid_*.csv` и
-`vial_combined_model.gif`.
+Выход расчёта карт: `maps_quasi_equilibrium.png`, `maps_conduction.png`
+(карты A/B/C/D), отдельные карты высокого разрешения в `maps_*_single/`,
+`grid_*.csv`. `output_data/timeseries.png` генерируется кнопкой
+`Получить кривую` для выбранных в интерфейсе `Ts/Pch`; `vial_combined_model.gif`
+создаётся при сохранении данных.
 
 ## Процесс (ТЗ 1.1)
 Старт: продукт = полка = `Tfreeze`, давление `Pch` установилось. Полка греется со

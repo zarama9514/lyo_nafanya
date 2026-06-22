@@ -89,8 +89,6 @@ class Params:
     Pch_max_torr: float = 0.30
     n_Pc: int = 7
     map_levels: int = 18
-    Ts_demo_C: float = 0.0
-    Pch_demo_torr: float = 0.15
 
     # --- производные (СИ) ---
     @property
