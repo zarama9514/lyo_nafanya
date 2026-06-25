@@ -69,6 +69,7 @@ class Params:
     Rs: float = 0.2              # сопротивление пробки
     # термодинамика/состав
     Tc_C: float = -32.0          # критическая температура продукта, °C
+    deltaTc_C: float = 2.0       # безопасный отступ от Tc, °C
     cs: float = 0.05             # массовая доля сухого в растворе
     rho_sol: float = 1000.0      # плотность раствора, кг/м³
     # оборудование
@@ -89,6 +90,15 @@ class Params:
     Pch_max_torr: float = 0.30
     n_Pc: int = 7
     map_levels: int = 18
+    # предельный режим оборудования: rate = intercept + slope * Pch
+    equipment_rate_intercept: float = -0.04469035532994933
+    equipment_rate_slope: float = 4.0456852791878175
+    equipment_limit_points: list = field(default_factory=lambda: [
+        (0.02, 0.037),
+        (0.03, 0.077),
+        (0.04, 0.115),
+        (0.058, 0.191),
+    ])
 
     # --- производные (СИ) ---
     @property

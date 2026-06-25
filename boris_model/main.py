@@ -37,7 +37,7 @@ PARAM_GROUPS = {
         "Ap_cm2", "Av_cm2", "Kv_direct", "Kc", "Kd", "condenser_kg_h", "n_vials",
     ],
     "Параметры образца": [
-        "Tc_C", "L_cm", "cs", "rho_sol", "R0", "A1", "A2", "Rs",
+        "Tc_C", "deltaTc_C", "L_cm", "cs", "rho_sol", "R0", "A1", "A2", "Rs",
     ],
     "Параметры процесса": [
         "Ts_min_C", "Ts_max_C", "n_Ts", "Pch_min_torr", "Pch_max_torr", "n_Pc",
@@ -48,6 +48,8 @@ PARAM_GROUPS = {
 
 DEFAULT_CURVE_TS_C = 0.0
 DEFAULT_CURVE_PCH_TORR = 0.15
+PLOT_DATA_PATH = os.path.join(OUTPUT_DIR, "plot_data.pkl")
+TIMESERIES_DATA_PATH = os.path.join(OUTPUT_DIR, "timeseries_data.pkl")
 
 
 def ensure_output_dir(path=OUTPUT_DIR):
@@ -82,6 +84,36 @@ def build_grid(p: ph.Params):
     Ts_C = np.linspace(p.Ts_min_C, p.Ts_max_C, int(p.n_Ts))
     Pch = np.linspace(max(0.01, p.Pch_min_torr), p.Pch_max_torr, int(p.n_Pc))
     return Ts_C, Pch
+
+
+def params_to_dict(p: ph.Params):
+    return {f.name: getattr(p, f.name) for f in fields(ph.Params)}
+
+
+def clean_equipment_points(points):
+    clean = []
+    for row in points or []:
+        if len(row) < 2:
+            continue
+        pc, rate = float(row[0]), float(row[1])
+        if np.isfinite(pc) and np.isfinite(rate):
+            clean.append((pc, rate))
+    return clean
+
+
+def fit_equipment_limit(points):
+    clean = clean_equipment_points(points)
+    if len(clean) < 2:
+        raise ValueError("Для расчета линейных коэффициентов нужны минимум две точки.")
+    x = np.asarray([row[0] for row in clean], dtype=float)
+    y = np.asarray([row[1] for row in clean], dtype=float)
+    slope, intercept = np.polyfit(x, y, 1)
+    return float(intercept), float(slope), clean
+
+
+def equipment_limit_rate(Pch_torr, p: ph.Params):
+    rate = p.equipment_rate_intercept + p.equipment_rate_slope * np.asarray(Pch_torr)
+    return np.maximum(rate, 0.0)
 
 
 def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
@@ -175,10 +207,15 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
         _decorate_map_axes(ax)
     elif panel in ("C", "D"):
         line_colors = plt.cm.coolwarm(np.linspace(0, 1, len(Ts_C)))
+        for j in range(len(Ts_C) - 1):
+            y1 = grid["rate"][:, j]
+            y2 = grid["rate"][:, j + 1]
+            color = plt.cm.coolwarm((j + 0.5) / max(len(Ts_C) - 1, 1))
+            ax.fill_between(Pch, y1, y2, color=color, alpha=0.42, linewidth=0)
         for j, tsC in enumerate(Ts_C):
             label = f"Ts={tsC:.0f}" if panel == "C" and j % max(1, len(Ts_C) // 6) == 0 else None
             ax.plot(Pch, grid["rate"][:, j], "-o" if panel == "C" else "-",
-                    ms=3, color=line_colors[j], alpha=0.9, label=label)
+                    ms=3, color=line_colors[j], alpha=0.95, lw=1.6, label=label)
         ax.set_xlabel("Pch, Torr")
         ax.set_ylabel("ср. скорость сублимации, г/(ч·виал)")
         ax.set_title("C. Скорость сублимации" if panel == "C" else "D. Рабочая область")
@@ -188,7 +225,13 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
         if panel == "C" and add_legend:
             ax.legend(fontsize=7, ncol=2)
         if panel == "D":
-            data_max = float(np.nanmax(grid["rate"]))
+            equipment_line = equipment_limit_rate(Pch, p)
+            equipment_points = clean_equipment_points(p.equipment_limit_points)
+            point_rates = [row[1] for row in equipment_points]
+            max_candidates = [float(np.nanmax(grid["rate"])), float(np.nanmax(equipment_line))]
+            if point_rates:
+                max_candidates.append(float(np.nanmax(point_rates)))
+            data_max = max(max_candidates)
             data_pad = max(0.05, 0.12 * data_max)
             pc_cross = _tc_boundary_pch(grid, Tc_C)
             bx, by = [], []
@@ -198,7 +241,17 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                     by.append(np.interp(pc, Pch, grid["rate"][:, j]))
             ex, ey = _extended_line(bx, by, float(Pch.min()), float(Pch.max()))
             if len(ex):
-                ax.plot(ex, ey, "k--", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
+                ax.plot(ex, ey, "k-", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
+            pc_safe = _tc_boundary_pch(grid, Tc_C - p.deltaTc_C)
+            sx, sy = [], []
+            for j, pc in enumerate(pc_safe):
+                if np.isfinite(pc):
+                    sx.append(pc)
+                    sy.append(np.interp(pc, Pch, grid["rate"][:, j]))
+            sex, sey = _extended_line(sx, sy, float(Pch.min()), float(Pch.max()))
+            if len(sex):
+                ax.plot(sex, sey, "k--", lw=2.2,
+                        label=f"безопасная max(Tp)=Tc-{p.deltaTc_C:g}°C")
             cap_g_h_vial = p.condenser_kg_h * 1000.0 / max(int(p.n_vials), 1)
             cap_line = cap_g_h_vial
             cap_label = "макс. массопоток оборудования"
@@ -206,6 +259,13 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 cap_line = data_max + data_pad
                 cap_label = f"макс. массопоток оборудования: {cap_g_h_vial:.1f} г/ч/виал (выше шкалы)"
             ax.axhline(cap_line, color="black", ls=":", lw=2, label=cap_label)
+            ax.plot(Pch, equipment_line, color="red", ls="--", lw=2.2,
+                    label="предельный режим: rate(Pch)")
+            if equipment_points:
+                px = [row[0] for row in equipment_points]
+                py = [row[1] for row in equipment_points]
+                ax.scatter(px, py, s=48, color="red", edgecolor="white", linewidth=0.8,
+                           zorder=11, label="эксп. точки предела")
             pc_star = 0.29 * 10 ** (0.019 * Tc_C)
             if len(ex) >= 2:
                 y_star = float(np.interp(pc_star, ex, ey))
@@ -255,6 +315,44 @@ def save_csv(grid, path, model_name):
                             f"{grid['rate'][i, j]:.5f}"])
 
 
+def save_plot_data(p: ph.Params, grids, out_dir=OUTPUT_DIR):
+    ensure_output_dir(out_dir)
+    payload = {
+        "kind": "boris_model_plot_data",
+        "version": 1,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "params": params_to_dict(p),
+        "grids": grids,
+        "equipment_limit": {
+            "intercept": p.equipment_rate_intercept,
+            "slope": p.equipment_rate_slope,
+            "points": clean_equipment_points(p.equipment_limit_points),
+            "formula": "rate_g_h_vial = intercept + slope * Pch_torr",
+        },
+    }
+    path = os.path.join(out_dir, "plot_data.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(payload, f)
+    return path
+
+
+def save_timeseries_data(p: ph.Params, results, Ts_C, Pch_torr, out_dir=OUTPUT_DIR):
+    ensure_output_dir(out_dir)
+    payload = {
+        "kind": "boris_model_timeseries_data",
+        "version": 1,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "params": params_to_dict(p),
+        "Ts_C": float(Ts_C),
+        "Pch_torr": float(Pch_torr),
+        "results": results,
+    }
+    path = os.path.join(out_dir, "timeseries_data.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(payload, f)
+    return path
+
+
 def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True,
                   curve_Ts_C=DEFAULT_CURVE_TS_C, curve_Pch_torr=DEFAULT_CURVE_PCH_TORR):
     ensure_output_dir(out_dir)
@@ -266,6 +364,7 @@ def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True,
         plot_maps(grids[name], p.Tc_C, os.path.join(out_dir, f"maps_{name}.png"),
                   f"2.5D карты — модуль: {name}", p, panels_dir=panel_dir)
         save_csv(grids[name], os.path.join(out_dir, f"grid_{name}.csv"), name)
+    save_plot_data(p, grids, out_dir)
     if make_gif:
         cd.make_combined_gif(
             curve_Ts_C + K0, curve_Pch_torr, p,
@@ -286,6 +385,7 @@ def calculate_timeseries_only(p: ph.Params, Ts_C, Pch_torr, out_dir=OUTPUT_DIR):
         f"Временные кривые (Ts_lim={Ts_C:.1f}°C, Pch={Pch_torr:.3f} Torr)",
         p,
     )
+    save_timeseries_data(p, ts_results, Ts_C, Pch_torr, out_dir)
     return ts_results
 
 
@@ -359,11 +459,13 @@ class App:
         self.ttk.Entry(controls, width=8, textvariable=self.pch_var).pack(side="left", padx=(4, 12))
         run_btn = self.ttk.Button(controls, text="Запустить расчет", command=self.recalculate)
         run_btn.pack(side="left", padx=(0, 8))
+        equipment_btn = self.ttk.Button(controls, text="Предельный режим", command=self.edit_equipment_limit)
+        equipment_btn.pack(side="left", padx=(0, 8))
         curve_btn = self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries)
         curve_btn.pack(side="left", padx=(0, 8))
         save_btn = self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample)
         save_btn.pack(side="left")
-        self.action_buttons.extend([run_btn, curve_btn, save_btn])
+        self.action_buttons.extend([run_btn, equipment_btn, curve_btn, save_btn])
         self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
 
     def set_busy(self, busy, message=None):
@@ -416,6 +518,83 @@ class App:
             self.data = None
             self.status_var.set("Параметры сохранены. Нажмите «Запустить расчет».")
         self.ttk.Button(win, text="Сохранить", command=save).grid(row=len(entries), column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+
+    def parse_equipment_points(self, text):
+        rows = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.lower().startswith("pch"):
+                continue
+            for sep in (";", ",", "\t"):
+                line = line.replace(sep, " ")
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                rows.append((float(parts[0]), float(parts[1])))
+            except ValueError:
+                continue
+        return clean_equipment_points(rows)
+
+    def edit_equipment_limit(self):
+        win = self.tk.Toplevel(self.root)
+        win.title("Предельный режим оборудования")
+        win.transient(self.root)
+        win.grab_set()
+
+        intercept_var = self.tk.StringVar(value=f"{self.p.equipment_rate_intercept:.8g}")
+        slope_var = self.tk.StringVar(value=f"{self.p.equipment_rate_slope:.8g}")
+        status_var = self.tk.StringVar(value="rate = intercept + slope * Pch")
+
+        self.ttk.Label(win, text="intercept, g/h/vial").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        self.ttk.Entry(win, textvariable=intercept_var, width=18).grid(row=0, column=1, sticky="ew", padx=8, pady=4)
+        self.ttk.Label(win, text="slope, g/h/vial/Torr").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        self.ttk.Entry(win, textvariable=slope_var, width=18).grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        self.ttk.Label(win, text="Экспериментальные точки: Pch, Torr; rate, g/h/vial").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2))
+        points_text = self.tk.Text(win, width=42, height=8)
+        default_points = clean_equipment_points(self.p.equipment_limit_points)
+        points_text.insert("1.0", "\n".join(f"{pc:g}; {rate:g}" for pc, rate in default_points))
+        points_text.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=8, pady=4)
+        self.ttk.Label(win, textvariable=status_var).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+        def fit_points():
+            try:
+                intercept, slope, points = fit_equipment_limit(self.parse_equipment_points(points_text.get("1.0", "end")))
+            except ValueError as exc:
+                status_var.set(str(exc))
+                return
+            intercept_var.set(f"{intercept:.8g}")
+            slope_var.set(f"{slope:.8g}")
+            status_var.set(f"Рассчитано по {len(points)} точкам.")
+
+        def save():
+            points = self.parse_equipment_points(points_text.get("1.0", "end"))
+            if points:
+                try:
+                    intercept, slope, points = fit_equipment_limit(points)
+                except ValueError as exc:
+                    status_var.set(str(exc))
+                    return
+            else:
+                intercept = float(intercept_var.get())
+                slope = float(slope_var.get())
+            self.p.equipment_rate_intercept = float(intercept)
+            self.p.equipment_rate_slope = float(slope)
+            self.p.equipment_limit_points = points
+            save_options(self.p)
+            win.destroy()
+            if self.data:
+                self.draw_d()
+                save_plot_data(self.p, self.data["grids"], OUTPUT_DIR)
+            self.status_var.set("Предельный режим сохранен.")
+
+        buttons = self.ttk.Frame(win)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+        self.ttk.Button(buttons, text="Рассчитать по точкам", command=fit_points).pack(side="left")
+        self.ttk.Button(buttons, text="Сохранить", command=save).pack(side="right")
+        win.columnconfigure(1, weight=1)
+        win.rowconfigure(3, weight=1)
 
     def recalculate(self):
         if self.busy:

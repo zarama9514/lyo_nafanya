@@ -41,9 +41,11 @@ uv run python boris_model/model_conduction.py
 `vial_combined.gif`.
 Выход расчёта карт: `maps_quasi_equilibrium.png`, `maps_conduction.png`
 (карты A/B/C/D), отдельные карты высокого разрешения в `maps_*_single/`,
-`grid_*.csv`. `output_data/timeseries.png` генерируется кнопкой
-`Получить кривую` для выбранных в интерфейсе `Ts/Pch`; `vial_combined_model.gif`
-создаётся при сохранении данных.
+`grid_*.csv` и `output_data/plot_data.pkl`. `output_data/timeseries.png` и
+`timeseries_data.pkl` генерируются кнопкой `Получить кривую` для выбранных в
+интерфейсе `Ts/Pch`; `vial_combined_model.gif` создаётся при сохранении данных.
+Сохранённые `*.pkl` можно открыть интерактивно: `uv run python
+boris_model/plot_saved_data.py boris_model/output_data/plot_data.pkl`.
 
 ## Процесс (ТЗ 1.1)
 Старт: продукт = полка = `Tfreeze`, давление `Pch` установилось. Полка греется со
