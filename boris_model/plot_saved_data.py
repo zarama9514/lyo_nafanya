@@ -33,26 +33,47 @@ def equipment_rate(Pch, p):
     return np.maximum(intercept + slope * np.asarray(Pch), 0.0)
 
 
+def interp_line_by_x(x, xs, ys):
+    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    ok = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[ok], ys[ok]
+    if len(xs) < 2:
+        return None
+    order = np.argsort(xs)
+    xs, ys = xs[order], ys[order]
+    if not (float(xs.min()) <= x <= float(xs.max())):
+        return None
+    return float(np.interp(x, xs, ys))
+
+
 def equipment_points(p):
     return [(float(x), float(y)) for x, y in getattr(p, "equipment_limit_points", [])]
 
 
-def tc_boundary_pch(grid, Tc_C):
-    Ts_C, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
-    out = []
-    for j, _ in enumerate(Ts_C):
+def boundary_curve(grid, threshold_C):
+    Pch, Tp, rate = grid["Pch"], grid["Tp_max"], grid["rate"]
+    xs, ys = [], []
+    for j, _ in enumerate(grid["Ts_C"]):
         col = Tp[:, j]
-        pc_cross = np.nan
+        pc_cross = None
         for i in range(len(Pch) - 1):
-            a, b = col[i] - Tc_C, col[i + 1] - Tc_C
+            a, b = col[i] - threshold_C, col[i + 1] - threshold_C
             if a == 0:
                 pc_cross = Pch[i]
                 break
             if a * b < 0:
                 pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
                 break
-        out.append(pc_cross)
-    return np.asarray(out)
+        if pc_cross is None:
+            if np.all(col > threshold_C):
+                pc_cross = Pch[0]
+            elif np.all(col < threshold_C):
+                pc_cross = Pch[-1]
+            else:
+                continue
+        xs.append(float(pc_cross))
+        ys.append(float(np.interp(pc_cross, Pch, rate[:, j])))
+    return np.asarray(xs), np.asarray(ys)
 
 
 def plot_panel(ax, fig, grid, panel, p):
@@ -109,15 +130,8 @@ def draw_d_overlays(ax, grid, p):
         (p.Tc_C - getattr(p, "deltaTc_C", 2.0), "k--",
          f"безопасная max(Tp)=Tc-{getattr(p, 'deltaTc_C', 2.0):g}°C"),
     ]:
-        pc_cross = tc_boundary_pch(grid, value)
-        xs, ys = [], []
-        for j, pc in enumerate(pc_cross):
-            if np.isfinite(pc):
-                xs.append(pc)
-                ys.append(np.interp(pc, Pch, grid["rate"][:, j]))
-        if xs:
-            order = np.argsort(xs)
-            ex, ey = np.asarray(xs)[order], np.asarray(ys)[order]
+        ex, ey = boundary_curve(grid, value)
+        if len(ex):
             ax.plot(ex, ey, style, lw=2.2, label=label)
             if style == "k--":
                 safe_x, safe_y = ex, ey
@@ -128,8 +142,9 @@ def draw_d_overlays(ax, grid, p):
                    edgecolor="white", linewidth=0.8, zorder=11, label="эксп. точки предела")
     pc_star = 0.29 * 10 ** (0.019 * p.Tc_C)
     y_candidates = [float(equipment_rate(pc_star, p))]
-    if len(safe_x) >= 2 and float(safe_x.min()) <= pc_star <= float(safe_x.max()):
-        y_candidates.append(float(np.interp(pc_star, safe_x, safe_y)))
+    safe_y_at_star = interp_line_by_x(pc_star, safe_x, safe_y)
+    if safe_y_at_star is not None:
+        y_candidates.append(safe_y_at_star)
     y_star = min(y_candidates)
     ax.scatter([pc_star], [y_star], marker="*", s=190,
                facecolor="white", edgecolor="black", linewidth=1.1, zorder=10,

@@ -116,6 +116,19 @@ def equipment_limit_rate(Pch_torr, p: ph.Params):
     return np.maximum(rate, 0.0)
 
 
+def interp_line_by_x(x, xs, ys):
+    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    ok = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[ok], ys[ok]
+    if len(xs) < 2:
+        return None
+    order = np.argsort(xs)
+    xs, ys = xs[order], ys[order]
+    if not (float(xs.min()) <= x <= float(xs.max())):
+        return None
+    return float(np.interp(x, xs, ys))
+
+
 def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
     nP, nT = len(Pch), len(Ts_C)
     t_dry = np.zeros((nP, nT))
@@ -156,21 +169,30 @@ def plot_timeseries(results, path, title, p: ph.Params):
     plt.close(fig)
 
 
-def _tc_boundary_pch(grid, Tc_C):
-    Ts_C, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
-    out = []
-    for j, _ in enumerate(Ts_C):
+def _boundary_curve(grid, threshold_C):
+    Pch, Tp, rate = grid["Pch"], grid["Tp_max"], grid["rate"]
+    xs, ys = [], []
+    for j, _ in enumerate(grid["Ts_C"]):
         col = Tp[:, j]
-        pc_cross = np.nan
+        pc_cross = None
         for i in range(len(Pch) - 1):
-            a, b = col[i] - Tc_C, col[i + 1] - Tc_C
+            a, b = col[i] - threshold_C, col[i + 1] - threshold_C
             if a == 0:
-                pc_cross = Pch[i]; break
+                pc_cross = Pch[i]
+                break
             if a * b < 0:
                 pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
                 break
-        out.append(pc_cross)
-    return np.array(out)
+        if pc_cross is None:
+            if np.all(col > threshold_C):
+                pc_cross = Pch[0]
+            elif np.all(col < threshold_C):
+                pc_cross = Pch[-1]
+            else:
+                continue
+        xs.append(float(pc_cross))
+        ys.append(float(np.interp(pc_cross, Pch, rate[:, j])))
+    return np.asarray(xs), np.asarray(ys)
 
 
 def _decorate_map_axes(ax):
@@ -218,28 +240,13 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
             equipment_points = clean_equipment_points(p.equipment_limit_points)
             data_max = float(np.nanmax(grid["rate"]))
             data_pad = 0.05 * data_max
-            pc_cross = _tc_boundary_pch(grid, Tc_C)
-            bx, by = [], []
-            for j, pc in enumerate(pc_cross):
-                if np.isfinite(pc):
-                    bx.append(pc)
-                    by.append(np.interp(pc, Pch, grid["rate"][:, j]))
-            if bx:
-                order = np.argsort(bx)
-                ex, ey = np.asarray(bx)[order], np.asarray(by)[order]
+            ex, ey = _boundary_curve(grid, Tc_C)
+            if len(ex):
                 ax.plot(ex, ey, "k-", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
             else:
                 ex, ey = np.asarray([]), np.asarray([])
-            pc_safe = _tc_boundary_pch(grid, Tc_C - p.deltaTc_C)
-            sx, sy = [], []
-            sex, sey = np.asarray([]), np.asarray([])
-            for j, pc in enumerate(pc_safe):
-                if np.isfinite(pc):
-                    sx.append(pc)
-                    sy.append(np.interp(pc, Pch, grid["rate"][:, j]))
-            if sx:
-                order = np.argsort(sx)
-                sex, sey = np.asarray(sx)[order], np.asarray(sy)[order]
+            sex, sey = _boundary_curve(grid, Tc_C - p.deltaTc_C)
+            if len(sex):
                 ax.plot(sex, sey, "k--", lw=2.2,
                         label=f"безопасная max(Tp)=Tc-{p.deltaTc_C:g}°C")
             ax.plot(Pch, equipment_line, color="red", ls="--", lw=2.2,
@@ -251,8 +258,9 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                            zorder=11, label="эксп. точки предела")
             pc_star = 0.29 * 10 ** (0.019 * Tc_C)
             y_candidates = [float(equipment_limit_rate(pc_star, p))]
-            if len(sex) >= 2 and float(sex.min()) <= pc_star <= float(sex.max()):
-                y_candidates.append(float(np.interp(pc_star, sex, sey)))
+            safe_y_at_star = interp_line_by_x(pc_star, sex, sey)
+            if safe_y_at_star is not None:
+                y_candidates.append(safe_y_at_star)
             y_star = min(y_candidates)
             ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
                        edgecolor="black", linewidth=1.1, zorder=10,
