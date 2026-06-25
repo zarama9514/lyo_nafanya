@@ -156,29 +156,21 @@ def plot_timeseries(results, path, title, p: ph.Params):
     plt.close(fig)
 
 
-def _boundary_curve(grid, threshold_C, n_Ts=200):
-    Ts_grid, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
-    rate = grid["rate"]
-    xs, ys = [], []
-    for tsC in np.linspace(float(Ts_grid.min()), float(Ts_grid.max()), n_Ts):
-        tp_vs_p = np.array([np.interp(tsC, Ts_grid, Tp[i, :]) for i in range(len(Pch))])
-        rate_vs_p = np.array([np.interp(tsC, Ts_grid, rate[i, :]) for i in range(len(Pch))])
+def _tc_boundary_pch(grid, Tc_C):
+    Ts_C, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
+    out = []
+    for j, _ in enumerate(Ts_C):
+        col = Tp[:, j]
+        pc_cross = np.nan
         for i in range(len(Pch) - 1):
-            a, b = tp_vs_p[i] - threshold_C, tp_vs_p[i + 1] - threshold_C
+            a, b = col[i] - Tc_C, col[i + 1] - Tc_C
             if a == 0:
-                pc = Pch[i]
-                xs.append(pc)
-                ys.append(np.interp(pc, Pch, rate_vs_p))
-                break
+                pc_cross = Pch[i]; break
             if a * b < 0:
-                pc = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
-                xs.append(pc)
-                ys.append(np.interp(pc, Pch, rate_vs_p))
+                pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
                 break
-    if not xs:
-        return np.asarray([]), np.asarray([])
-    order = np.argsort(xs)
-    return np.asarray(xs)[order], np.asarray(ys)[order]
+        out.append(pc_cross)
+    return np.array(out)
 
 
 def _decorate_map_axes(ax):
@@ -226,11 +218,28 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
             equipment_points = clean_equipment_points(p.equipment_limit_points)
             data_max = float(np.nanmax(grid["rate"]))
             data_pad = 0.05 * data_max
-            ex, ey = _boundary_curve(grid, Tc_C)
-            if len(ex):
+            pc_cross = _tc_boundary_pch(grid, Tc_C)
+            bx, by = [], []
+            for j, pc in enumerate(pc_cross):
+                if np.isfinite(pc):
+                    bx.append(pc)
+                    by.append(np.interp(pc, Pch, grid["rate"][:, j]))
+            if bx:
+                order = np.argsort(bx)
+                ex, ey = np.asarray(bx)[order], np.asarray(by)[order]
                 ax.plot(ex, ey, "k-", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
-            sex, sey = _boundary_curve(grid, Tc_C - p.deltaTc_C)
-            if len(sex):
+            else:
+                ex, ey = np.asarray([]), np.asarray([])
+            pc_safe = _tc_boundary_pch(grid, Tc_C - p.deltaTc_C)
+            sx, sy = [], []
+            sex, sey = np.asarray([]), np.asarray([])
+            for j, pc in enumerate(pc_safe):
+                if np.isfinite(pc):
+                    sx.append(pc)
+                    sy.append(np.interp(pc, Pch, grid["rate"][:, j]))
+            if sx:
+                order = np.argsort(sx)
+                sex, sey = np.asarray(sx)[order], np.asarray(sy)[order]
                 ax.plot(sex, sey, "k--", lw=2.2,
                         label=f"безопасная max(Tp)=Tc-{p.deltaTc_C:g}°C")
             ax.plot(Pch, equipment_line, color="red", ls="--", lw=2.2,

@@ -37,29 +37,22 @@ def equipment_points(p):
     return [(float(x), float(y)) for x, y in getattr(p, "equipment_limit_points", [])]
 
 
-def boundary_curve(grid, threshold_C, n_Ts=200):
-    Ts_grid, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
-    rate = grid["rate"]
-    xs, ys = [], []
-    for tsC in np.linspace(float(Ts_grid.min()), float(Ts_grid.max()), n_Ts):
-        tp_vs_p = np.array([np.interp(tsC, Ts_grid, Tp[i, :]) for i in range(len(Pch))])
-        rate_vs_p = np.array([np.interp(tsC, Ts_grid, rate[i, :]) for i in range(len(Pch))])
+def tc_boundary_pch(grid, Tc_C):
+    Ts_C, Pch, Tp = grid["Ts_C"], grid["Pch"], grid["Tp_max"]
+    out = []
+    for j, _ in enumerate(Ts_C):
+        col = Tp[:, j]
+        pc_cross = np.nan
         for i in range(len(Pch) - 1):
-            a, b = tp_vs_p[i] - threshold_C, tp_vs_p[i + 1] - threshold_C
+            a, b = col[i] - Tc_C, col[i + 1] - Tc_C
             if a == 0:
-                pc = Pch[i]
-                xs.append(pc)
-                ys.append(np.interp(pc, Pch, rate_vs_p))
+                pc_cross = Pch[i]
                 break
             if a * b < 0:
-                pc = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
-                xs.append(pc)
-                ys.append(np.interp(pc, Pch, rate_vs_p))
+                pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
                 break
-    if not xs:
-        return np.asarray([]), np.asarray([])
-    order = np.argsort(xs)
-    return np.asarray(xs)[order], np.asarray(ys)[order]
+        out.append(pc_cross)
+    return np.asarray(out)
 
 
 def plot_panel(ax, fig, grid, panel, p):
@@ -116,8 +109,15 @@ def draw_d_overlays(ax, grid, p):
         (p.Tc_C - getattr(p, "deltaTc_C", 2.0), "k--",
          f"безопасная max(Tp)=Tc-{getattr(p, 'deltaTc_C', 2.0):g}°C"),
     ]:
-        ex, ey = boundary_curve(grid, value)
-        if len(ex):
+        pc_cross = tc_boundary_pch(grid, value)
+        xs, ys = [], []
+        for j, pc in enumerate(pc_cross):
+            if np.isfinite(pc):
+                xs.append(pc)
+                ys.append(np.interp(pc, Pch, grid["rate"][:, j]))
+        if xs:
+            order = np.argsort(xs)
+            ex, ey = np.asarray(xs)[order], np.asarray(ys)[order]
             ax.plot(ex, ey, style, lw=2.2, label=label)
             if style == "k--":
                 safe_x, safe_y = ex, ey
