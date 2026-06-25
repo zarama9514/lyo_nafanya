@@ -55,17 +55,6 @@ def tc_boundary_pch(grid, Tc_C):
     return np.asarray(out)
 
 
-def extended_line(xs, ys, xmin, xmax):
-    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
-    ok = np.isfinite(xs) & np.isfinite(ys)
-    xs, ys = xs[ok], ys[ok]
-    if len(xs) < 2:
-        return xs, ys
-    order = np.argsort(xs)
-    xs, ys = xs[order], ys[order]
-    return np.asarray([xmin, *xs, xmax]), np.interp([xmin, *xs, xmax], xs, ys)
-
-
 def plot_panel(ax, fig, grid, panel, p):
     Ts_C, Pch = grid["Ts_C"], grid["Pch"]
     X, Y = np.meshgrid(Ts_C, Pch)
@@ -128,17 +117,11 @@ def draw_d_overlays(ax, grid, p):
             if np.isfinite(pc):
                 xs.append(pc)
                 ys.append(np.interp(pc, Pch, grid["rate"][:, j]))
-        ex, ey = extended_line(xs, ys, float(Pch.min()), float(Pch.max()))
-        if len(ex):
+        if xs:
+            order = np.argsort(xs)
+            ex, ey = np.asarray(xs)[order], np.asarray(ys)[order]
             ax.plot(ex, ey, style, lw=2.2, label=label)
 
-    cap = getattr(p, "condenser_kg_h", 0.0) * 1000.0 / max(int(getattr(p, "n_vials", 1)), 1)
-    cap_line = cap
-    cap_label = "макс. массопоток оборудования"
-    if cap > max(rate_max * 4.0, rate_max + pad):
-        cap_line = rate_max + pad
-        cap_label = f"макс. массопоток оборудования: {cap:.1f} г/ч/виал (выше шкалы)"
-    ax.axhline(cap_line, color="black", ls=":", lw=2, label=cap_label)
     ax.plot(Pch, eq, color="red", ls="--", lw=2.2, label="предельный режим: rate(Pch)")
     if points:
         ax.scatter([x for x, _ in points], [y for _, y in points], s=48, color="red",
@@ -150,8 +133,9 @@ def draw_d_overlays(ax, grid, p):
         if np.isfinite(pc):
             bx.append(pc)
             by.append(np.interp(pc, Pch, grid["rate"][:, j]))
-    ex, ey = extended_line(bx, by, float(Pch.min()), float(Pch.max()))
-    if len(ex) >= 2:
+    if len(bx) >= 2:
+        order = np.argsort(bx)
+        ex, ey = np.asarray(bx)[order], np.asarray(by)[order]
         y_star = float(np.interp(pc_star, ex, ey))
     else:
         y_star = float(np.nanmean(grid["rate"]))

@@ -34,7 +34,7 @@ MODELS = {"quasi_equilibrium": qe.run, "conduction": cd.run}
 
 PARAM_GROUPS = {
     "Параметры аппаратуры": [
-        "Ap_cm2", "Av_cm2", "Kv_direct", "Kc", "Kd", "condenser_kg_h", "n_vials",
+        "Ap_cm2", "Av_cm2", "Kv_direct", "Kc", "Kd", "n_vials",
     ],
     "Параметры образца": [
         "Tc_C", "deltaTc_C", "L_cm", "cs", "rho_sol", "R0", "A1", "A2", "Rs",
@@ -173,17 +173,6 @@ def _tc_boundary_pch(grid, Tc_C):
     return np.array(out)
 
 
-def _extended_line(xs, ys, xmin, xmax):
-    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
-    ok = np.isfinite(xs) & np.isfinite(ys)
-    xs, ys = xs[ok], ys[ok]
-    if len(xs) < 2:
-        return xs, ys
-    order = np.argsort(xs)
-    xs, ys = xs[order], ys[order]
-    return np.array([xmin, *xs, xmax]), np.interp([xmin, *xs, xmax], xs, ys)
-
-
 def _decorate_map_axes(ax):
     ax.set_xlabel("Ts_lim, °C")
     ax.set_ylabel("Pch, Torr")
@@ -239,26 +228,23 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 if np.isfinite(pc):
                     bx.append(pc)
                     by.append(np.interp(pc, Pch, grid["rate"][:, j]))
-            ex, ey = _extended_line(bx, by, float(Pch.min()), float(Pch.max()))
-            if len(ex):
+            if bx:
+                order = np.argsort(bx)
+                ex, ey = np.asarray(bx)[order], np.asarray(by)[order]
                 ax.plot(ex, ey, "k-", lw=2.2, label=f"max(Tp)=Tc={Tc_C:.0f}°C")
+            else:
+                ex, ey = np.asarray([]), np.asarray([])
             pc_safe = _tc_boundary_pch(grid, Tc_C - p.deltaTc_C)
             sx, sy = [], []
             for j, pc in enumerate(pc_safe):
                 if np.isfinite(pc):
                     sx.append(pc)
                     sy.append(np.interp(pc, Pch, grid["rate"][:, j]))
-            sex, sey = _extended_line(sx, sy, float(Pch.min()), float(Pch.max()))
-            if len(sex):
+            if sx:
+                order = np.argsort(sx)
+                sex, sey = np.asarray(sx)[order], np.asarray(sy)[order]
                 ax.plot(sex, sey, "k--", lw=2.2,
                         label=f"безопасная max(Tp)=Tc-{p.deltaTc_C:g}°C")
-            cap_g_h_vial = p.condenser_kg_h * 1000.0 / max(int(p.n_vials), 1)
-            cap_line = cap_g_h_vial
-            cap_label = "макс. массопоток оборудования"
-            if cap_g_h_vial > max(data_max * 4.0, data_max + data_pad):
-                cap_line = data_max + data_pad
-                cap_label = f"макс. массопоток оборудования: {cap_g_h_vial:.1f} г/ч/виал (выше шкалы)"
-            ax.axhline(cap_line, color="black", ls=":", lw=2, label=cap_label)
             ax.plot(Pch, equipment_line, color="red", ls="--", lw=2.2,
                     label="предельный режим: rate(Pch)")
             if equipment_points:
