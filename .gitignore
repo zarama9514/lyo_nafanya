@@ -15,3 +15,5 @@ wheels/
 
 # Copyrighted source articles (not redistributed)
 *.pdf
+output_data/
+*.pkl
