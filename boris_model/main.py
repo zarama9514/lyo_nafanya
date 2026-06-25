@@ -116,25 +116,31 @@ def equipment_limit_rate(Pch_torr, p: ph.Params):
     return np.maximum(rate, 0.0)
 
 
-def interp_line_by_x(x, xs, ys):
-    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
-    ok = np.isfinite(xs) & np.isfinite(ys)
-    xs, ys = xs[ok], ys[ok]
-    if len(xs) < 2:
+def interp_grid_rate(grid, pch_torr, Ts_C):
+    Pch = np.asarray(grid["Pch"], dtype=float)
+    Ts = np.asarray(grid["Ts_C"], dtype=float)
+    rate = np.asarray(grid["rate"], dtype=float)
+    if len(Pch) < 2 or len(Ts) < 2:
         return None
-    order = np.argsort(xs)
-    xs, ys = xs[order], ys[order]
-    if not (float(xs.min()) <= x <= float(xs.max())):
+    if not (float(Pch.min()) <= pch_torr <= float(Pch.max())):
         return None
-    return float(np.interp(x, xs, ys))
+    if not (float(Ts.min()) <= Ts_C <= float(Ts.max())):
+        return None
+    rate_at_pch = np.asarray([
+        np.interp(pch_torr, Pch, rate[:, j])
+        for j in range(len(Ts))
+    ])
+    return float(np.interp(Ts_C, Ts, rate_at_pch))
 
 
-def star_y_on_lower_dashed_limit(pc_star, safe_x, safe_y, p: ph.Params):
-    y_candidates = [float(equipment_limit_rate(pc_star, p))]
-    safe_y_at_star = interp_line_by_x(pc_star, safe_x, safe_y)
-    if safe_y_at_star is not None:
-        y_candidates.append(safe_y_at_star)
-    return min(y_candidates)
+def tang_pikal_star(grid, p: ph.Params):
+    Tp_star_C = p.Tc_C - p.deltaTc_C
+    Pch_star = ph.tang_pikal_pch_torr(Tp_star_C)
+    Ts_star_C = ph.tang_pikal_shelf_temp_C(Tp_star_C, Pch_star, p)
+    rate_star = interp_grid_rate(grid, Pch_star, Ts_star_C)
+    if rate_star is None:
+        return None
+    return Pch_star, Ts_star_C, rate_star, Tp_star_C
 
 
 def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
@@ -264,11 +270,13 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 py = [row[1] for row in equipment_points]
                 ax.scatter(px, py, s=48, color="red", edgecolor="white", linewidth=0.8,
                            zorder=11, label="эксп. точки предела")
-            pc_star = 0.29 * 10 ** (0.019 * Tc_C)
-            y_star = star_y_on_lower_dashed_limit(pc_star, sex, sey, p)
-            ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
-                       edgecolor="black", linewidth=1.1, zorder=10,
-                       label="Teng & Pikal Pch(Tc)")
+            star = tang_pikal_star(grid, p)
+            if star is not None:
+                pc_star, ts_star, y_star, tp_star = star
+                ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
+                           edgecolor="black", linewidth=1.1, zorder=10,
+                           label=(f"Tang & Pikal Eq.5: Tp={tp_star:.1f}°C, "
+                                  f"Ts={ts_star:.1f}°C"))
             ax.set_xlim(float(Pch.min()), float(Pch.max()))
             ax.set_ylim(0.0, data_max + data_pad)
             ax.legend(fontsize=8)

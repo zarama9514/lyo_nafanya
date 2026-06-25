@@ -155,6 +155,34 @@ def subl_flux_areal(Ti_K, Pch_torr, l_m, p: Params):
     return max((Pice - Pch) / R, 0.0)
 
 
+def tang_pikal_pch_torr(Tp_C):
+    """Tang & Pikal 2004 Eq. 2: рекомендуемое давление камеры, Torr."""
+    return 0.29 * 10.0 ** (0.019 * Tp_C)
+
+
+def tang_pikal_shelf_temp_C(Tp_C, Pch_torr, p: Params,
+                            l_ice_m=None, dry_layer_m=None):
+    """Tang & Pikal 2004 Eq. 5 для обратного расчета температуры полки.
+
+    Ts = Tp + 1/Av * dQ/dt * (1/Kv + l_ice/k_I)
+
+    dQ/dt берется из скорости сублимации при заданном Tp/Pch. Если отдельная
+    толщина льда не задана, используем высоту заполнения L как доступный в GUI
+    геометрический масштаб для l_ice.
+    """
+    T_K = Tp_C + 273.15
+    if l_ice_m is None:
+        l_ice_m = p.L
+    if dry_layer_m is None:
+        dry_layer_m = p.L
+    Js = subl_flux_areal(T_K, Pch_torr, dry_layer_m, p)
+    dQ_dt = Js * p.Ap * delta_Hs(T_K)
+    Kv = Kv_si(Pch_torr, p)
+    kI = k_ice(T_K)
+    thermal_resistance = 1.0 / Kv + max(float(l_ice_m), 1e-9) / kI
+    return float(Tp_C + (dQ_dt / p.Av) * thermal_resistance)
+
+
 def front_floor_K(Pch_torr):
     """Порог сублимации: Ti, при котором Pice = Pch (ниже сушки нет)."""
     Pch = Pch_torr * TORR
