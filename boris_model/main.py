@@ -428,8 +428,15 @@ class App:
         self.left.pack(side="left", fill="y")
         self.right = ttk.Frame(root, padding=10)
         self.right.pack(side="right", fill="both", expand=True)
+        self._configure_styles()
         self._build_params()
         self._build_results()
+
+    def _configure_styles(self):
+        style = self.ttk.Style()
+        style.configure("Large.TButton", padding=(12, 8), font=("TkDefaultFont", 14))
+        style.configure("Large.TEntry", padding=(6, 6), font=("TkDefaultFont", 14))
+        style.configure("Large.TLabel", font=("TkDefaultFont", 14))
 
     def _build_params(self):
         self.param_buttons = []
@@ -443,6 +450,15 @@ class App:
             btn = self.ttk.Button(frame, text="Изменить", command=lambda g=group: self.edit_group(g))
             btn.pack(fill="x", pady=(6, 0))
             self.param_buttons.append(btn)
+        equipment_frame = self.ttk.LabelFrame(self.left, text="Предельный режим", padding=8)
+        equipment_frame.pack(fill="x", pady=(0, 8))
+        equipment_btn = self.ttk.Button(
+            equipment_frame,
+            text="Данные предельного режима",
+            command=self.edit_equipment_limit,
+        )
+        equipment_btn.pack(fill="x")
+        self.param_buttons.append(equipment_btn)
 
     def _build_results(self):
         top = self.ttk.Frame(self.right)
@@ -453,19 +469,17 @@ class App:
         self.ttk.Entry(self.right, textvariable=self.sample_var).pack(fill="x")
         controls = self.ttk.Frame(self.right)
         controls.pack(fill="x", pady=8)
-        self.ttk.Label(controls, text="Ts, °C").pack(side="left")
-        self.ttk.Entry(controls, width=8, textvariable=self.ts_var).pack(side="left", padx=(4, 12))
-        self.ttk.Label(controls, text="Pch, Torr").pack(side="left")
-        self.ttk.Entry(controls, width=8, textvariable=self.pch_var).pack(side="left", padx=(4, 12))
-        run_btn = self.ttk.Button(controls, text="Запустить расчет", command=self.recalculate)
-        run_btn.pack(side="left", padx=(0, 8))
-        equipment_btn = self.ttk.Button(controls, text="Предельный режим", command=self.edit_equipment_limit)
-        equipment_btn.pack(side="left", padx=(0, 8))
-        curve_btn = self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries)
-        curve_btn.pack(side="left", padx=(0, 8))
-        save_btn = self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample)
+        self.ttk.Label(controls, text="Ts, °C", style="Large.TLabel").pack(side="left")
+        self.ttk.Entry(controls, width=9, textvariable=self.ts_var, style="Large.TEntry").pack(side="left", padx=(6, 18))
+        self.ttk.Label(controls, text="Pch, Torr", style="Large.TLabel").pack(side="left")
+        self.ttk.Entry(controls, width=9, textvariable=self.pch_var, style="Large.TEntry").pack(side="left", padx=(6, 18))
+        run_btn = self.ttk.Button(controls, text="Запустить расчет", command=self.recalculate, style="Large.TButton")
+        run_btn.pack(side="left", padx=(0, 12))
+        curve_btn = self.ttk.Button(controls, text="Получить кривую", command=self.show_timeseries, style="Large.TButton")
+        curve_btn.pack(side="left", padx=(0, 12))
+        save_btn = self.ttk.Button(controls, text="Сохранить данные", command=self.save_sample, style="Large.TButton")
         save_btn.pack(side="left")
-        self.action_buttons.extend([run_btn, equipment_btn, curve_btn, save_btn])
+        self.action_buttons.extend([run_btn, curve_btn, save_btn])
         self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
 
     def set_busy(self, busy, message=None):
