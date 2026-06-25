@@ -100,12 +100,10 @@ def draw_d_overlays(ax, grid, p):
     Pch = grid["Pch"]
     rate_max = float(np.nanmax(grid["rate"]))
     eq = equipment_rate(Pch, p)
-    rate_max = max(rate_max, float(np.nanmax(eq)))
     points = equipment_points(p)
-    if points:
-        rate_max = max(rate_max, max(y for _, y in points))
-    pad = max(0.05, 0.12 * rate_max)
+    pad = 0.05 * rate_max
 
+    safe_x, safe_y = np.asarray([]), np.asarray([])
     for value, style, label in [
         (p.Tc_C, "k-", f"max(Tp)=Tc={p.Tc_C:.0f}°C"),
         (p.Tc_C - getattr(p, "deltaTc_C", 2.0), "k--",
@@ -121,29 +119,23 @@ def draw_d_overlays(ax, grid, p):
             order = np.argsort(xs)
             ex, ey = np.asarray(xs)[order], np.asarray(ys)[order]
             ax.plot(ex, ey, style, lw=2.2, label=label)
+            if style == "k--":
+                safe_x, safe_y = ex, ey
 
     ax.plot(Pch, eq, color="red", ls="--", lw=2.2, label="предельный режим: rate(Pch)")
     if points:
         ax.scatter([x for x, _ in points], [y for _, y in points], s=48, color="red",
                    edgecolor="white", linewidth=0.8, zorder=11, label="эксп. точки предела")
     pc_star = 0.29 * 10 ** (0.019 * p.Tc_C)
-    tc_cross = tc_boundary_pch(grid, p.Tc_C)
-    bx, by = [], []
-    for j, pc in enumerate(tc_cross):
-        if np.isfinite(pc):
-            bx.append(pc)
-            by.append(np.interp(pc, Pch, grid["rate"][:, j]))
-    if len(bx) >= 2:
-        order = np.argsort(bx)
-        ex, ey = np.asarray(bx)[order], np.asarray(by)[order]
-        y_star = float(np.interp(pc_star, ex, ey))
-    else:
-        y_star = float(np.nanmean(grid["rate"]))
+    y_candidates = [float(equipment_rate(pc_star, p))]
+    if len(safe_x) >= 2 and float(safe_x.min()) <= pc_star <= float(safe_x.max()):
+        y_candidates.append(float(np.interp(pc_star, safe_x, safe_y)))
+    y_star = min(y_candidates)
     ax.scatter([pc_star], [y_star], marker="*", s=190,
                facecolor="white", edgecolor="black", linewidth=1.1, zorder=10,
                label="Teng & Pikal Pch(Tc)")
     ax.set_xlim(float(Pch.min()), float(Pch.max()))
-    ax.set_ylim(min(-pad, np.nanmin(grid["rate"]) - pad), rate_max + 1.7 * pad)
+    ax.set_ylim(0.0, rate_max + pad)
     ax.legend(fontsize=8)
 
 

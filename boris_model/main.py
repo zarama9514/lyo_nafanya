@@ -216,12 +216,8 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
         if panel == "D":
             equipment_line = equipment_limit_rate(Pch, p)
             equipment_points = clean_equipment_points(p.equipment_limit_points)
-            point_rates = [row[1] for row in equipment_points]
-            max_candidates = [float(np.nanmax(grid["rate"])), float(np.nanmax(equipment_line))]
-            if point_rates:
-                max_candidates.append(float(np.nanmax(point_rates)))
-            data_max = max(max_candidates)
-            data_pad = max(0.05, 0.12 * data_max)
+            data_max = float(np.nanmax(grid["rate"]))
+            data_pad = 0.05 * data_max
             pc_cross = _tc_boundary_pch(grid, Tc_C)
             bx, by = [], []
             for j, pc in enumerate(pc_cross):
@@ -236,6 +232,7 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 ex, ey = np.asarray([]), np.asarray([])
             pc_safe = _tc_boundary_pch(grid, Tc_C - p.deltaTc_C)
             sx, sy = [], []
+            sex, sey = np.asarray([]), np.asarray([])
             for j, pc in enumerate(pc_safe):
                 if np.isfinite(pc):
                     sx.append(pc)
@@ -253,15 +250,15 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
                 ax.scatter(px, py, s=48, color="red", edgecolor="white", linewidth=0.8,
                            zorder=11, label="эксп. точки предела")
             pc_star = 0.29 * 10 ** (0.019 * Tc_C)
-            if len(ex) >= 2:
-                y_star = float(np.interp(pc_star, ex, ey))
-            else:
-                y_star = float(np.nanmean(grid["rate"]))
+            y_candidates = [float(equipment_limit_rate(pc_star, p))]
+            if len(sex) >= 2 and float(sex.min()) <= pc_star <= float(sex.max()):
+                y_candidates.append(float(np.interp(pc_star, sex, sey)))
+            y_star = min(y_candidates)
             ax.scatter([pc_star], [y_star], marker="*", s=190, facecolor="white",
                        edgecolor="black", linewidth=1.1, zorder=10,
                        label="Teng & Pikal Pch(Tc)")
             ax.set_xlim(float(Pch.min()), float(Pch.max()))
-            ax.set_ylim(min(-data_pad, np.nanmin(grid["rate"]) - data_pad), data_max + 1.7 * data_pad)
+            ax.set_ylim(0.0, data_max + data_pad)
             ax.legend(fontsize=8)
 
 
