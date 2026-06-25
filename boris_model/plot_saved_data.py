@@ -46,6 +46,14 @@ def interp_line_by_x(x, xs, ys):
     return float(np.interp(x, xs, ys))
 
 
+def star_y_on_lower_dashed_limit(pc_star, safe_x, safe_y, p):
+    y_candidates = [float(equipment_rate(pc_star, p))]
+    safe_y_at_star = interp_line_by_x(pc_star, safe_x, safe_y)
+    if safe_y_at_star is not None:
+        y_candidates.append(safe_y_at_star)
+    return min(y_candidates)
+
+
 def equipment_points(p):
     return [(float(x), float(y)) for x, y in getattr(p, "equipment_limit_points", [])]
 
@@ -141,11 +149,7 @@ def draw_d_overlays(ax, grid, p):
         ax.scatter([x for x, _ in points], [y for _, y in points], s=48, color="red",
                    edgecolor="white", linewidth=0.8, zorder=11, label="эксп. точки предела")
     pc_star = 0.29 * 10 ** (0.019 * p.Tc_C)
-    y_candidates = [float(equipment_rate(pc_star, p))]
-    safe_y_at_star = interp_line_by_x(pc_star, safe_x, safe_y)
-    if safe_y_at_star is not None:
-        y_candidates.append(safe_y_at_star)
-    y_star = min(y_candidates)
+    y_star = star_y_on_lower_dashed_limit(pc_star, safe_x, safe_y, p)
     ax.scatter([pc_star], [y_star], marker="*", s=190,
                facecolor="white", edgecolor="black", linewidth=1.1, zorder=10,
                label="Teng & Pikal Pch(Tc)")
