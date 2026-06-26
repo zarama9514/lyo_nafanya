@@ -41,21 +41,42 @@ def physics_params(p):
     return ph.Params(**{k: v for k, v in vars(p).items() if k in valid})
 
 
+def interp_or_extrapolate(x, xs, ys):
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    ok = np.isfinite(xs) & np.isfinite(ys)
+    xs, ys = xs[ok], ys[ok]
+    if len(xs) == 0:
+        return None
+    order = np.argsort(xs)
+    xs, ys = xs[order], ys[order]
+    if len(xs) == 1:
+        return float(ys[0])
+    if x <= xs[0]:
+        dx = xs[1] - xs[0]
+        return float(ys[0] if dx == 0 else ys[0] + (x - xs[0]) * (ys[1] - ys[0]) / dx)
+    if x >= xs[-1]:
+        dx = xs[-1] - xs[-2]
+        return float(ys[-1] if dx == 0 else ys[-1] + (x - xs[-1]) * (ys[-1] - ys[-2]) / dx)
+    return float(np.interp(x, xs, ys))
+
+
 def interp_grid_rate(grid, pch_torr, Ts_C):
     Pch = np.asarray(grid["Pch"], dtype=float)
     Ts = np.asarray(grid["Ts_C"], dtype=float)
     rate = np.asarray(grid["rate"], dtype=float)
-    if len(Pch) < 2 or len(Ts) < 2:
+    if len(Pch) == 0 or len(Ts) == 0:
         return None
-    if not (float(Pch.min()) <= pch_torr <= float(Pch.max())):
+    rate_at_pch = []
+    for j in range(len(Ts)):
+        value = interp_or_extrapolate(pch_torr, Pch, rate[:, j])
+        if value is None:
+            return None
+        rate_at_pch.append(value)
+    value = interp_or_extrapolate(Ts_C, Ts, rate_at_pch)
+    if value is None or not np.isfinite(value):
         return None
-    if not (float(Ts.min()) <= Ts_C <= float(Ts.max())):
-        return None
-    rate_at_pch = np.asarray([
-        np.interp(pch_torr, Pch, rate[:, j])
-        for j in range(len(Ts))
-    ])
-    return float(np.interp(Ts_C, Ts, rate_at_pch))
+    return max(float(value), 0.0)
 
 
 def tang_pikal_star(grid, p):
@@ -142,10 +163,13 @@ def plot_panel(ax, fig, grid, panel, p):
 
 def draw_d_overlays(ax, grid, p):
     Pch = grid["Pch"]
+    star = tang_pikal_star(grid, p)
     rate_max = float(np.nanmax(grid["rate"]))
+    if star is not None:
+        rate_max = max(rate_max, float(star[2]))
     eq = equipment_rate(Pch, p)
     points = equipment_points(p)
-    pad = 0.05 * rate_max
+    pad = 0.05 * rate_max if rate_max > 0 else 0.05
 
     for value, style, label in [
         (p.Tc_C, "k-", f"max(Tp)=Tc={p.Tc_C:.0f}°C"),
@@ -160,7 +184,6 @@ def draw_d_overlays(ax, grid, p):
     if points:
         ax.scatter([x for x, _ in points], [y for _, y in points], s=48, color="red",
                    edgecolor="white", linewidth=0.8, zorder=11, label="эксп. точки предела")
-    star = tang_pikal_star(grid, p)
     if star is not None:
         pc_star, ts_star, y_star, tp_star = star
         ax.scatter([pc_star], [y_star], marker="*", s=190,
