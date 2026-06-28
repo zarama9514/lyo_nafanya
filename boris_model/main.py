@@ -31,6 +31,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OPTIONS_PATH = os.path.join(HERE, "options.pkl")
 OUTPUT_DIR = os.path.join(HERE, "output_data")
 MODELS = {"quasi_equilibrium": qe.run, "conduction": cd.run}
+MODEL_LABELS = {
+    "quasi_equilibrium": "Квазистационарная",
+    "conduction": "Усложненная теплопроводность",
+}
 
 PARAM_GROUPS = {
     "Параметры аппаратуры": [
@@ -88,6 +92,11 @@ def build_grid(p: ph.Params):
 
 def params_to_dict(p: ph.Params):
     return {f.name: getattr(p, f.name) for f in fields(ph.Params)}
+
+
+def selected_model_items(model_names=None):
+    names = list(MODELS) if model_names is None else list(model_names)
+    return [(name, MODELS[name]) for name in names if name in MODELS]
 
 
 def clean_equipment_points(points):
@@ -164,17 +173,21 @@ def tang_pikal_star(grid, p: ph.Params):
     return Pch_star, Ts_star_C, rate_star, Tp_star_C
 
 
-def run_grid(run_fn, Ts_C, Pch, p: ph.Params):
+def run_grid(run_fn, Ts_C, Pch, p: ph.Params, progress_callback=None):
     nP, nT = len(Pch), len(Ts_C)
     t_dry = np.zeros((nP, nT))
     Tp_max = np.zeros((nP, nT))
     rate = np.zeros((nP, nT))
+    done = 0
     for i, pc in enumerate(Pch):
         for j, tsC in enumerate(Ts_C):
             res = run_fn(tsC + K0, pc, p)
             t_dry[i, j] = res["t_dry_h"]
             Tp_max[i, j] = res["Tp_max_K"] - K0
             rate[i, j] = res["rate_mean_g_h"]
+            done += 1
+            if progress_callback:
+                progress_callback(done)
     return dict(t_dry=t_dry, Tp_max=Tp_max, rate=rate, Ts_C=Ts_C, Pch=Pch)
 
 
@@ -230,9 +243,39 @@ def _boundary_curve(grid, threshold_C):
     return np.asarray(xs), np.asarray(ys)
 
 
+def _map_boundary_curve(grid, threshold_C):
+    Pch, Tp = grid["Pch"], grid["Tp_max"]
+    xs, ys = [], []
+    for j, tsC in enumerate(grid["Ts_C"]):
+        col = Tp[:, j]
+        pc_cross = None
+        for i in range(len(Pch) - 1):
+            a, b = col[i] - threshold_C, col[i + 1] - threshold_C
+            if a == 0:
+                pc_cross = Pch[i]
+                break
+            if a * b < 0:
+                pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
+                break
+        if pc_cross is not None:
+            xs.append(float(tsC))
+            ys.append(float(pc_cross))
+    return np.asarray(xs), np.asarray(ys)
+
+
 def _decorate_map_axes(ax):
     ax.set_xlabel("Ts_lim, °C")
     ax.set_ylabel("Pch, Torr")
+
+
+def _draw_map_temperature_limits(ax, grid, Tc_C, p: ph.Params):
+    for threshold, style, label in [
+        (Tc_C, "k-", f"max(Tp)=Tc={Tc_C:.0f}°C"),
+        (Tc_C - p.deltaTc_C, "k--", f"безопасная max(Tp)=Tc-{p.deltaTc_C:g}°C"),
+    ]:
+        xs, ys = _map_boundary_curve(grid, threshold)
+        if len(xs):
+            ax.plot(xs, ys, style, lw=2.0, label=label)
 
 
 def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=True):
@@ -242,8 +285,10 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
     if panel == "A":
         c = ax.contourf(X, Y, grid["t_dry"], levels, cmap=cmap)
         fig.colorbar(c, ax=ax, label="время сушки, ч")
+        _draw_map_temperature_limits(ax, grid, Tc_C, p)
         ax.set_title("A. Время сушки")
         _decorate_map_axes(ax)
+        ax.legend(fontsize=8)
     elif panel == "B":
         c = ax.contourf(X, Y, grid["Tp_max"], levels, cmap=cmap)
         fig.colorbar(c, ax=ax, label="max Tp, °C")
@@ -252,22 +297,25 @@ def _plot_panel(ax, fig, grid, panel, Tc_C, levels, p: ph.Params, add_legend=Tru
         ax.set_title("B. Макс. температура продукта")
         _decorate_map_axes(ax)
     elif panel in ("C", "D"):
-        line_colors = plt.cm.coolwarm(np.linspace(0, 1, len(Ts_C)))
+        rate_min = float(np.nanmin(grid["rate"]))
+        rate_max = float(np.nanmax(grid["rate"]))
+        norm = plt.Normalize(rate_min, rate_max if rate_max > rate_min else rate_min + 1.0)
         for j in range(len(Ts_C) - 1):
             y1 = grid["rate"][:, j]
             y2 = grid["rate"][:, j + 1]
-            color = plt.cm.coolwarm((j + 0.5) / max(len(Ts_C) - 1, 1))
+            color = plt.cm.coolwarm(norm(float(np.nanmean([y1, y2]))))
             ax.fill_between(Pch, y1, y2, color=color, alpha=0.42, linewidth=0)
         for j, tsC in enumerate(Ts_C):
             label = f"Ts={tsC:.0f}" if panel == "C" and j % max(1, len(Ts_C) // 6) == 0 else None
+            color = plt.cm.coolwarm(norm(float(np.nanmean(grid["rate"][:, j]))))
             ax.plot(Pch, grid["rate"][:, j], "-o" if panel == "C" else "-",
-                    ms=3, color=line_colors[j], alpha=0.95, lw=1.6, label=label)
+                    ms=3, color=color, alpha=0.95, lw=1.6, label=label)
         ax.set_xlabel("Pch, Torr")
         ax.set_ylabel("ср. скорость сублимации, г/(ч·виал)")
         ax.set_title("C. Скорость сублимации" if panel == "C" else "D. Рабочая область")
         ax.grid(alpha=0.3)
-        sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=plt.Normalize(Ts_C.min(), Ts_C.max()))
-        fig.colorbar(sm, ax=ax, label="Ts_lim, °C")
+        sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=norm)
+        fig.colorbar(sm, ax=ax, label="ср. скорость сублимации, г/(ч·виал)")
         if panel == "C" and add_legend:
             ax.legend(fontsize=7, ncol=2)
         if panel == "D":
@@ -380,12 +428,25 @@ def save_timeseries_data(p: ph.Params, results, Ts_C, Pch_torr, out_dir=OUTPUT_D
 
 
 def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True,
-                  curve_Ts_C=DEFAULT_CURVE_TS_C, curve_Pch_torr=DEFAULT_CURVE_PCH_TORR):
+                  curve_Ts_C=DEFAULT_CURVE_TS_C, curve_Pch_torr=DEFAULT_CURVE_PCH_TORR,
+                  model_names=None, progress_callback=None):
     ensure_output_dir(out_dir)
     Ts_C, Pch = build_grid(p)
+    model_items = selected_model_items(model_names)
+    if not model_items:
+        raise ValueError("Выберите хотя бы одну модель для расчета.")
+    total = len(model_items) * len(Ts_C) * len(Pch)
+    done_total = 0
+
+    def on_model_point(_model_done):
+        nonlocal done_total
+        done_total += 1
+        if progress_callback:
+            progress_callback(done_total, total)
+
     grids = {}
-    for name, fn in MODELS.items():
-        grids[name] = run_grid(fn, Ts_C, Pch, p)
+    for name, fn in model_items:
+        grids[name] = run_grid(fn, Ts_C, Pch, p, progress_callback=on_model_point)
         panel_dir = os.path.join(out_dir, f"maps_{name}_single")
         plot_maps(grids[name], p.Tc_C, os.path.join(out_dir, f"maps_{name}.png"),
                   f"2.5D карты — модуль: {name}", p, panels_dir=panel_dir)
@@ -399,11 +460,15 @@ def calculate_all(p: ph.Params, out_dir=OUTPUT_DIR, make_gif=True,
     return dict(grids=grids, out_dir=out_dir)
 
 
-def calculate_timeseries_only(p: ph.Params, Ts_C, Pch_torr, out_dir=OUTPUT_DIR):
+def calculate_timeseries_only(p: ph.Params, Ts_C, Pch_torr, out_dir=OUTPUT_DIR,
+                              model_names=None):
     ensure_output_dir(out_dir)
+    model_items = selected_model_items(model_names)
+    if not model_items:
+        raise ValueError("Выберите хотя бы одну модель для расчета кривой.")
     ts_results = {
         name: fn(Ts_C + K0, Pch_torr, p)
-        for name, fn in MODELS.items()
+        for name, fn in model_items
     }
     plot_timeseries(
         ts_results,
@@ -446,9 +511,12 @@ class App:
         self.ts_var = tk.StringVar(value=f"{DEFAULT_CURVE_TS_C:g}")
         self.pch_var = tk.StringVar(value=f"{DEFAULT_CURVE_PCH_TORR:g}")
         self.status_var = tk.StringVar(value="Расчет не выполнен. Нажмите «Запустить расчет».")
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.model_vars = {name: tk.BooleanVar(value=True) for name in MODELS}
         self.busy = False
         self.param_buttons = []
         self.action_buttons = []
+        self.model_controls = []
 
         self.left = ttk.Frame(root, padding=10)
         self.left.pack(side="left", fill="y")
@@ -487,6 +555,24 @@ class App:
         self.param_buttons.append(equipment_btn)
 
     def _build_results(self):
+        model_bar = self.ttk.LabelFrame(self.right, text="Модели для расчета", padding=8)
+        model_bar.pack(fill="x", pady=(0, 8))
+        for name in MODELS:
+            chk = self.ttk.Checkbutton(
+                model_bar,
+                text=MODEL_LABELS.get(name, name),
+                variable=self.model_vars[name],
+            )
+            chk.pack(side="left", padx=(0, 18))
+            self.model_controls.append(chk)
+        self.progress = self.ttk.Progressbar(
+            model_bar,
+            variable=self.progress_var,
+            maximum=100,
+            mode="determinate",
+            length=220,
+        )
+        self.progress.pack(side="right", padx=(12, 0))
         top = self.ttk.Frame(self.right)
         top.pack(fill="both", expand=True)
         self.plot_holder = self.ttk.Frame(top)
@@ -508,11 +594,21 @@ class App:
         self.action_buttons.extend([run_btn, curve_btn, save_btn])
         self.ttk.Label(self.right, textvariable=self.status_var).pack(anchor="w")
 
+    def selected_model_names(self):
+        return [name for name, var in self.model_vars.items() if var.get()]
+
+    def validate_selected_models(self):
+        names = self.selected_model_names()
+        if not names:
+            self.status_var.set("Ошибка: выберите хотя бы одну модель для расчета.")
+            return None
+        return names
+
     def set_busy(self, busy, message=None):
         self.busy = busy
         state = "disabled" if busy else "normal"
         live_buttons = []
-        for btn in [*self.param_buttons, *self.action_buttons]:
+        for btn in [*self.param_buttons, *self.action_buttons, *self.model_controls]:
             try:
                 if btn.winfo_exists():
                     btn.configure(state=state)
@@ -521,6 +617,7 @@ class App:
                 pass
         self.param_buttons = [btn for btn in self.param_buttons if btn in live_buttons]
         self.action_buttons = [btn for btn in self.action_buttons if btn in live_buttons]
+        self.model_controls = [btn for btn in self.model_controls if btn in live_buttons]
         if message:
             self.status_var.set(message)
 
@@ -639,16 +736,26 @@ class App:
     def recalculate(self):
         if self.busy:
             return
+        model_names = self.validate_selected_models()
+        if model_names is None:
+            return
+        self.progress_var.set(0.0)
         self.set_busy(True, "Считаю карты в фоне...")
         p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
         curve_Ts_C = float(self.ts_var.get())
         curve_Pch_torr = float(self.pch_var.get())
 
         def work():
+            def report_progress(done, total):
+                percent = 100.0 * done / max(total, 1)
+                self.root.after(0, lambda p=percent: self.update_progress(p))
+
             try:
                 data = calculate_all(p_snapshot, OUTPUT_DIR, make_gif=False,
                                      curve_Ts_C=curve_Ts_C,
-                                     curve_Pch_torr=curve_Pch_torr)
+                                     curve_Pch_torr=curve_Pch_torr,
+                                     model_names=model_names,
+                                     progress_callback=report_progress)
             except Exception as exc:
                 message = str(exc)
                 self.root.after(0, lambda: self.finish_with_error(message))
@@ -657,20 +764,41 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def update_progress(self, percent):
+        self.progress_var.set(percent)
+        self.status_var.set(f"Считаю карты в фоне... {percent:.0f}%")
+
     def finish_recalculate(self, data):
         self.data = data
+        self.progress_var.set(100.0)
         self.draw_d()
         self.set_busy(False, f"Готово: {OUTPUT_DIR}. GIF будет создан при сохранении данных.")
 
     def finish_with_error(self, message):
         self.set_busy(False, f"Ошибка расчета: {message}")
 
+    def active_plot_model_name(self):
+        if not self.data or not self.data.get("grids"):
+            return None
+        if "conduction" in self.data["grids"]:
+            return "conduction"
+        return next(iter(self.data["grids"]))
+
     def draw_d(self):
         if not self.data:
             return
+        model_name = self.active_plot_model_name()
+        if model_name is None:
+            self.status_var.set("Нет рассчитанных моделей для отображения графика D.")
+            return
         for child in self.plot_holder.winfo_children():
             child.destroy()
-        fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
+        fig = plot_d_figure(
+            self.data["grids"][model_name],
+            self.p.Tc_C,
+            self.p,
+            f"D. {MODEL_LABELS.get(model_name, model_name)}",
+        )
         canvas = FigureCanvasTkAgg(fig, master=self.plot_holder)
         canvas.draw()
         widget = canvas.get_tk_widget()
@@ -682,9 +810,18 @@ class App:
     def open_interactive_d(self):
         if not self.data:
             return
+        model_name = self.active_plot_model_name()
+        if model_name is None:
+            self.status_var.set("Нет рассчитанных моделей для отображения графика D.")
+            return
         win = self.tk.Toplevel(self.root)
         win.title("График D")
-        fig = plot_d_figure(self.data["grids"]["conduction"], self.p.Tc_C, self.p, "D. Теплопроводность")
+        fig = plot_d_figure(
+            self.data["grids"][model_name],
+            self.p.Tc_C,
+            self.p,
+            f"D. {MODEL_LABELS.get(model_name, model_name)}",
+        )
         canvas = FigureCanvasTkAgg(fig, master=win)
         toolbar = NavigationToolbar2Tk(canvas, win)
         toolbar.update()
@@ -694,14 +831,32 @@ class App:
     def show_timeseries(self):
         if self.busy:
             return
+        model_names = self.validate_selected_models()
+        if model_names is None:
+            return
+        if self.data is None:
+            self.status_var.set("Сначала нажмите «Запустить расчет», затем получите кривую.")
+            return
+        missing = [name for name in model_names if name not in self.data.get("grids", {})]
+        if missing:
+            labels = ", ".join(MODEL_LABELS.get(name, name) for name in missing)
+            self.status_var.set(f"Для выбранных моделей нет карт: {labels}. Запустите расчет.")
+            return
         Ts_C = float(self.ts_var.get())
         Pch_torr = float(self.pch_var.get())
+        self.progress_var.set(0.0)
         self.set_busy(True, "Считаю временную кривую...")
         p_snapshot = ph.Params(**{f.name: getattr(self.p, f.name) for f in fields(ph.Params)})
 
         def work():
             try:
-                results = calculate_timeseries_only(p_snapshot, Ts_C, Pch_torr, OUTPUT_DIR)
+                results = calculate_timeseries_only(
+                    p_snapshot,
+                    Ts_C,
+                    Pch_torr,
+                    OUTPUT_DIR,
+                    model_names=model_names,
+                )
             except Exception as exc:
                 message = str(exc)
                 self.root.after(0, lambda: self.finish_with_error(message))
@@ -711,6 +866,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def open_timeseries_window(self, results, Ts_C, Pch_torr):
+        self.progress_var.set(100.0)
         self.set_busy(False, f"Готово: {OUTPUT_DIR}")
         win = self.tk.Toplevel(self.root)
         win.title("Временные кривые")

@@ -120,6 +120,37 @@ def boundary_curve(grid, threshold_C):
     return np.asarray(xs), np.asarray(ys)
 
 
+def map_boundary_curve(grid, threshold_C):
+    Pch, Tp = grid["Pch"], grid["Tp_max"]
+    xs, ys = [], []
+    for j, tsC in enumerate(grid["Ts_C"]):
+        col = Tp[:, j]
+        pc_cross = None
+        for i in range(len(Pch) - 1):
+            a, b = col[i] - threshold_C, col[i + 1] - threshold_C
+            if a == 0:
+                pc_cross = Pch[i]
+                break
+            if a * b < 0:
+                pc_cross = Pch[i] + (Pch[i + 1] - Pch[i]) * (-a) / (b - a)
+                break
+        if pc_cross is not None:
+            xs.append(float(tsC))
+            ys.append(float(pc_cross))
+    return np.asarray(xs), np.asarray(ys)
+
+
+def draw_map_temperature_limits(ax, grid, p):
+    delta = getattr(p, "deltaTc_C", 2.0)
+    for threshold, style, label in [
+        (p.Tc_C, "k-", f"max(Tp)=Tc={p.Tc_C:.0f}°C"),
+        (p.Tc_C - delta, "k--", f"безопасная max(Tp)=Tc-{delta:g}°C"),
+    ]:
+        xs, ys = map_boundary_curve(grid, threshold)
+        if len(xs):
+            ax.plot(xs, ys, style, lw=2.0, label=label)
+
+
 def plot_panel(ax, fig, grid, panel, p):
     Ts_C, Pch = grid["Ts_C"], grid["Pch"]
     X, Y = np.meshgrid(Ts_C, Pch)
@@ -128,9 +159,11 @@ def plot_panel(ax, fig, grid, panel, p):
     if panel == "A":
         c = ax.contourf(X, Y, grid["t_dry"], levels, cmap=cmap)
         fig.colorbar(c, ax=ax, label="время сушки, ч")
+        draw_map_temperature_limits(ax, grid, p)
         ax.set_title("A. Время сушки")
         ax.set_xlabel("Ts_lim, °C")
         ax.set_ylabel("Pch, Torr")
+        ax.legend(fontsize=8)
     elif panel == "B":
         c = ax.contourf(X, Y, grid["Tp_max"], levels, cmap=cmap)
         fig.colorbar(c, ax=ax, label="max Tp, °C")
@@ -140,17 +173,21 @@ def plot_panel(ax, fig, grid, panel, p):
         ax.set_xlabel("Ts_lim, °C")
         ax.set_ylabel("Pch, Torr")
     elif panel in ("C", "D"):
-        colors = plt.cm.coolwarm(np.linspace(0, 1, len(Ts_C)))
+        rate_min = float(np.nanmin(grid["rate"]))
+        rate_max = float(np.nanmax(grid["rate"]))
+        norm = plt.Normalize(rate_min, rate_max if rate_max > rate_min else rate_min + 1.0)
         for j in range(len(Ts_C) - 1):
-            color = plt.cm.coolwarm((j + 0.5) / max(len(Ts_C) - 1, 1))
+            color = plt.cm.coolwarm(norm(float(np.nanmean([grid["rate"][:, j],
+                                                           grid["rate"][:, j + 1]]))))
             ax.fill_between(Pch, grid["rate"][:, j], grid["rate"][:, j + 1],
                             color=color, alpha=0.42, linewidth=0)
         for j, tsC in enumerate(Ts_C):
             label = f"Ts={tsC:.0f}" if panel == "C" and j % max(1, len(Ts_C) // 6) == 0 else None
+            color = plt.cm.coolwarm(norm(float(np.nanmean(grid["rate"][:, j]))))
             ax.plot(Pch, grid["rate"][:, j], "-o" if panel == "C" else "-",
-                    ms=3, color=colors[j], lw=1.6, label=label)
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(Ts_C.min(), Ts_C.max()))
-        fig.colorbar(sm, ax=ax, label="Ts_lim, °C")
+                    ms=3, color=color, lw=1.6, label=label)
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        fig.colorbar(sm, ax=ax, label="ср. скорость сублимации, г/(ч·виал)")
         ax.set_xlabel("Pch, Torr")
         ax.set_ylabel("ср. скорость сублимации, г/(ч·виал)")
         ax.set_title("C. Скорость сублимации" if panel == "C" else "D. Рабочая область")
