@@ -173,21 +173,18 @@ def plot_panel(ax, fig, grid, panel, p):
         ax.set_xlabel("Ts_lim, °C")
         ax.set_ylabel("Pch, Torr")
     elif panel in ("C", "D"):
-        rate_min = float(np.nanmin(grid["rate"]))
-        rate_max = float(np.nanmax(grid["rate"]))
-        norm = plt.Normalize(rate_min, rate_max if rate_max > rate_min else rate_min + 1.0)
+        norm = plt.Normalize(float(Ts_C.min()), float(Ts_C.max()))
         for j in range(len(Ts_C) - 1):
-            color = plt.cm.coolwarm(norm(float(np.nanmean([grid["rate"][:, j],
-                                                           grid["rate"][:, j + 1]]))))
+            color = plt.cm.coolwarm(norm(0.5 * (Ts_C[j] + Ts_C[j + 1])))
             ax.fill_between(Pch, grid["rate"][:, j], grid["rate"][:, j + 1],
                             color=color, alpha=0.42, linewidth=0)
         for j, tsC in enumerate(Ts_C):
             label = f"Ts={tsC:.0f}" if panel == "C" and j % max(1, len(Ts_C) // 6) == 0 else None
-            color = plt.cm.coolwarm(norm(float(np.nanmean(grid["rate"][:, j]))))
+            color = plt.cm.coolwarm(norm(tsC))
             ax.plot(Pch, grid["rate"][:, j], "-o" if panel == "C" else "-",
                     ms=3, color=color, lw=1.6, label=label)
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        fig.colorbar(sm, ax=ax, label="ср. скорость сублимации, г/(ч·виал)")
+        fig.colorbar(sm, ax=ax, label="Ts_lim, °C")
         ax.set_xlabel("Pch, Torr")
         ax.set_ylabel("ср. скорость сублимации, г/(ч·виал)")
         ax.set_title("C. Скорость сублимации" if panel == "C" else "D. Рабочая область")
